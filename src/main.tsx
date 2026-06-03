@@ -442,7 +442,7 @@ function App() {
           <div className="brand-heading">
             <img
               className="brand-art"
-              src="/ProjectFarPoint.png"
+              src={`${import.meta.env.BASE_URL}ProjectFarPoint.png`}
               alt="Project FarPoint logo with planet Earth in space"
             />
             <div className="brand-title">
