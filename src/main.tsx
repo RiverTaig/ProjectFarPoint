@@ -225,8 +225,8 @@ function GlobeView() {
       },
       symbol: {
         type: 'simple-line',
-        color: [108, 124, 86, 0.48],
-        width: 2.25,
+        color: [112, 130, 84, 0.62],
+        width: 3,
       },
       attributes: {
         name: 'Voyager',
@@ -245,8 +245,8 @@ function GlobeView() {
       },
       symbol: {
         type: 'simple-line',
-        color: [78, 111, 130, 0.5],
-        width: 2.25,
+        color: [78, 116, 138, 0.62],
+        width: 3,
       },
       attributes: {
         name: 'Far Point Trail',
@@ -439,13 +439,17 @@ function App() {
     <main className="welcome-page">
       <section className="welcome-copy-panel" aria-labelledby="welcome-title">
         <article className="intro">
-          <img
-            className="brand-art"
-            src="/ProjectFarPoint.png"
-            alt="Project FarPoint logo with planet Earth in space"
-          />
-          <p className="eyebrow">Welcome to Project Far Point</p>
-          <h1 id="welcome-title">Project Far Point</h1>
+          <div className="brand-heading">
+            <img
+              className="brand-art"
+              src="/ProjectFarPoint.png"
+              alt="Project FarPoint logo with planet Earth in space"
+            />
+            <div className="brand-title">
+              <p className="eyebrow">Welcome to Project Far Point</p>
+              <h1 id="welcome-title">Project Far Point</h1>
+            </div>
+          </div>
           <div className="welcome-copy">
             <p>
               Project Far Point (PFP) is a geo-blog documenting my attempt to

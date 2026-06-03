@@ -50,12 +50,23 @@ body {
   width: min(100%, 680px);
 }
 
+.brand-heading {
+  display: flex;
+  gap: clamp(16px, 2.4vw, 28px);
+  align-items: center;
+  margin-bottom: clamp(22px, 3.4vw, 38px);
+}
+
 .brand-art {
   display: block;
-  width: clamp(78px, 9vw, 132px);
+  flex: 0 0 auto;
+  width: clamp(114px, 12vw, 168px);
   height: auto;
-  margin-bottom: clamp(22px, 4vw, 44px);
   filter: drop-shadow(0 16px 26px rgba(0, 0, 0, 0.42));
+}
+
+.brand-title {
+  min-width: 0;
 }
 
 .eyebrow {
@@ -69,19 +80,18 @@ body {
 }
 
 h1 {
-  max-width: 10ch;
   margin: 0;
   color: #fffdf7;
-  font-size: clamp(2.55rem, 5.8vw, 5.25rem);
-  line-height: 0.94;
+  font-size: clamp(2rem, 3.4vw, 3.35rem);
+  line-height: 1;
   letter-spacing: 0;
+  white-space: nowrap;
 }
 
 .welcome-copy {
   display: grid;
   gap: 0.95rem;
   max-width: 68ch;
-  margin-top: clamp(22px, 3.6vw, 38px);
   color: #f1eadb;
   font-size: clamp(0.94rem, 1.05vw, 1.06rem);
   line-height: 1.66;
@@ -164,7 +174,7 @@ h1 {
   }
 
   .brand-art {
-    width: clamp(76px, 22vw, 112px);
+    width: clamp(108px, 27vw, 156px);
   }
 }
 
@@ -173,8 +183,15 @@ h1 {
     height: 52vh;
     min-height: 300px;
   }
+  .brand-heading {
+    gap: 14px;
+  }
+
+  .brand-art {
+    width: 102px;
+  }
 
   h1 {
-    max-width: 9ch;
+    font-size: clamp(1.55rem, 8vw, 2rem);
   }
 }
