@@ -206,7 +206,7 @@ function GlobeView() {
     }
 
     const map = new Map({
-      basemap: 'satellite',
+      basemap: 'hybrid',
       ground: 'world-elevation',
     });
     const voyagerRouteLayer = new GraphicsLayer({
@@ -360,7 +360,7 @@ function GlobeView() {
         },
       },
       attributes: {
-        name: 'Calgary, Alberta',
+        name: 'Calgary',
       },
     });
     const calgaryLabel = new Graphic({
@@ -374,7 +374,7 @@ function GlobeView() {
       },
       symbol: {
         type: 'text',
-        text: 'Calgary, Alberta',
+        text: 'Calgary',
         color: [255, 253, 247, 1],
         haloColor: [2, 6, 17, 0.92],
         haloSize: 1.5,
@@ -453,58 +453,89 @@ function App() {
             </div>
           </div>
         </header>
-        <article className="intro">
-          <div className="welcome-copy">
-            <p>
-              Project Far Point (PFP) is a geo-blog documenting my attempt to
-              travel a cumulative distance equal to the circumference of the
-              Earth: 40,076 kilometers. Over the course of a decade or more,
-              thousands of walks, backpacking trips, paddling adventures, ski
-              tours, and snowshoe excursions will become the real-world
-              building blocks of two imagined journeys that together circle the
-              globe: <strong className="journey-voyager">Voyager</strong> and
-              the <strong className="journey-far-point">Far Point Trail</strong>.
-            </p>
-            <p>
-              Voyager begins high in the remote Southern Alps of New Zealand and
-              travels, <i>in imagination</i>, 20,038 kilometers through Australia, Asia, over the summit of Mount Everest,
-              and through Europe to its destination: the Cathedral of St. James in
-              Santiago de Compostela, Spain - the famed terminus of the Camino
-              de Santiago and the exact opposite side of the Earth (antipode) of its starting point.
-            </p>
-            <p>
-              The reality behind Voyager is far less direct, but no less
-              meaningful. Every local walk, winter outing, river float, and day
-              hike contributes to the journey. With a focus on autumn, winter,
-              and spring adventures near my home in Calgary, Alberta, Voyager
-              will also chronicle travels to all fifty U.S. states, Canada's
-              thirteen provinces and territories, and walking explorations of
-              many of the world's great cities.
-            </p>
-            <p>
-              The second half of the project, the Far Point Trail, is Voyager's
-              wild twin. It imagines an oceanic return voyage from the cathedral in Santiago de Compostela back
-              to the Southern Alps of New Zealand. Supporting that fictional
-              route is a very real 20,038-kilometer wilderness journey linking
-              some of North America's most iconic long-distance trails,
-              including Canada's Great Divide Trail and Trans Canada Trail, the
-              Pacific Northwest Trail, the Continental Divide Trail, the Arizona
-              Trail, the Pacific Crest Trail, and the Oregon and California
-              coastal trails.
-            </p>
-            <p>
-              Together, Voyager and the Far Point Trail will one day complete a full virtual 
-               circumnavigation of the Earth.  Explore the map by clicking on the routes and markers to learn more about the journeys and follow along as the progress paths grow with each new adventure.
-               You will find photos, videos, and stories from the adventures, as well as reflections on the experience of connecting with the world through travel and imagination.
-            </p>
-            <p>
-              The destination may be years away, but the adventure begins with
-              the next step. I'm already planning a celebration in the courtyard
-              of St. James Cathedral in 2038! Until then, I invite you to follow
-              along and share in the journey.
-            </p>
-          </div>
-        </article>
+        <div className="intro-shell">
+          <article className="intro">
+            <div className="welcome-copy">
+              <p>
+                Project Far Point is a geo-blog documenting my attempt to
+                travel a cumulative distance equal to the circumference of the
+                Earth: 40,076 kilometers. Over the course of a decade or more,
+                thousands of walks, backpacking trips, paddling adventures, ski
+                tours, and snowshoe excursions will become the real-world
+                building blocks of two imagined journeys that together circle the
+                globe: <strong className="journey-voyager">Voyager</strong> and
+                the <strong className="journey-far-point">Far Point Trail</strong>.
+              </p>
+              <p>
+                Voyager begins high in the remote Southern Alps of New Zealand and
+                travels, <i>in imagination</i>, 20,038 kilometers through Australia, Asia, over the summit of Mount Everest,
+                and through Europe to its destination: the Cathedral of St. James in
+                Santiago de Compostela, Spain - the famed terminus of the Camino
+                de Santiago and the exact opposite side of the Earth (antipode) of its starting point.
+              </p>
+              <p>
+                The reality behind Voyager is far less direct, but no less
+                meaningful. Every local walk, winter outing, river float, and day
+                hike contributes to the journey. With a focus on autumn, winter,
+                and spring adventures near my home in Calgary, Alberta, Voyager
+                will also chronicle travels to all fifty U.S. states, Canada's
+                thirteen provinces and territories, and walking explorations of
+                many of the world's great cities.
+              </p>
+              <p>
+                The second half of the project, the Far Point Trail, is Voyager's
+                wild twin. It imagines an oceanic return voyage from the cathedral in Santiago de Compostela back
+                to the Southern Alps of New Zealand. Supporting that fictional
+                route is a very real 20,038-kilometer wilderness journey linking
+                some of North America's most iconic long-distance trails,
+                including Canada's Great Divide Trail and Trans Canada Trail, the
+                Pacific Northwest Trail, the Continental Divide Trail, the Arizona
+                Trail, the Pacific Crest Trail, and the Oregon and California
+                coastal trails.
+              </p>
+              <p>
+                Together, Voyager and the Far Point Trail will one day complete a full virtual
+                circumnavigation of the Earth. Explore the map by clicking on the routes and markers to learn more about the journeys and follow along as the progress paths grow with each new adventure.
+                You will find photos, videos, and stories from the adventures, as well as reflections on the experience of connecting with the world through travel and imagination.
+              </p>
+              <p>
+                The destination may be years away, but the adventure begins with
+                the next step. I'm already planning a celebration in the courtyard
+                of St. James Cathedral in 2038! Until then, I invite you to follow
+                along and share in the journey.
+              </p>
+            </div>
+          </article>
+          <aside className="journey-summary" aria-label="Project route summary">
+            <div className="summary-item summary-voyager">
+              <span className="summary-kicker journey-voyager">Voyager</span>
+              <span className="summary-label">New Zealand to Santiago de Compostela</span>
+              <span className="summary-progress-text">
+                <strong>12,001 km</strong> of 20,038 km completed <strong>(60%)</strong>
+              </span>
+              <span className="summary-progress" aria-hidden="true">
+                <span className="summary-progress-fill summary-progress-voyager" />
+              </span>
+            </div>
+            <div className="summary-item summary-far-point">
+              <span className="summary-kicker journey-far-point">Far Point Trail</span>
+              <span className="summary-label">Santiago de Compostela to New Zealand</span>
+              <span className="summary-progress-text">
+                <strong>10,000 km</strong> of 20,038 km completed <strong>(50%)</strong>
+              </span>
+              <span className="summary-progress" aria-hidden="true">
+                <span className="summary-progress-fill summary-progress-far-point" />
+              </span>
+            </div>
+            <div className="summary-route">
+              <span className="route-dot route-dot-start" />
+              <span className="route-line route-line-voyager" />
+              <span className="route-dot route-dot-middle" />
+              <span className="route-line route-line-far-point" />
+              <span className="route-dot route-dot-end" />
+            </div>
+          </aside>
+        </div>
       </section>
       <section className="globe-panel" aria-label="Interactive 3D globe">
         <GlobeView />
