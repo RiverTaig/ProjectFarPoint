@@ -38,35 +38,90 @@ body {
 .welcome-copy-panel {
   position: relative;
   z-index: 2;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
   min-width: 0;
   padding: clamp(24px, 4.8vw, 72px);
+  overflow: hidden;
   background:
     linear-gradient(90deg, rgba(2, 6, 17, 0.98), rgba(2, 6, 17, 0.92) 74%, rgba(2, 6, 17, 0.74)),
     linear-gradient(135deg, rgba(79, 180, 255, 0.08), rgba(143, 188, 59, 0.07));
   box-shadow: 24px 0 60px rgba(0, 0, 0, 0.38);
 }
 
-.intro {
+.brand-header {
+  flex: 0 0 auto;
   width: min(100%, 680px);
+}
+
+.intro {
+  min-height: 0;
+  width: min(100%, 680px);
+  overflow-y: auto;
+  padding-right: clamp(10px, 1.4vw, 18px);
+  scrollbar-width: none;
+}
+
+.intro::-webkit-scrollbar {
+  display: none;
 }
 
 .brand-heading {
   display: flex;
-  gap: clamp(16px, 2.4vw, 28px);
+  gap: clamp(22px, 3vw, 36px);
   align-items: center;
-  margin-bottom: clamp(22px, 3.4vw, 38px);
+  margin-bottom: clamp(18px, 3vw, 32px);
+}
+
+.brand-mark {
+  position: relative;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: clamp(134px, 14vw, 192px);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(2, 6, 17, 0) 58%, rgba(2, 6, 17, 0.78) 72%),
+    radial-gradient(circle at 42% 34%, rgba(79, 180, 255, 0.26), rgba(143, 188, 59, 0.12) 44%, rgba(2, 6, 17, 0) 70%);
+  filter: drop-shadow(0 24px 34px rgba(0, 0, 0, 0.44));
+}
+
+.brand-mark::before,
+.brand-mark::after {
+  position: absolute;
+  inset: 8%;
+  pointer-events: none;
+  content: "";
+  border-radius: 50%;
+}
+
+.brand-mark::before {
+  border: 1px solid rgba(143, 188, 59, 0.56);
+  transform: rotate(-18deg) scaleX(1.18);
+}
+
+.brand-mark::after {
+  border-top: 1px solid rgba(79, 180, 255, 0.42);
+  border-bottom: 1px solid rgba(143, 188, 59, 0.24);
+  transform: rotate(18deg) scaleX(1.28) scaleY(0.72);
 }
 
 .brand-art {
   display: block;
-  flex: 0 0 auto;
-  width: clamp(114px, 12vw, 168px);
-  height: auto;
-  filter: drop-shadow(0 16px 26px rgba(0, 0, 0, 0.42));
+  width: 82%;
+  height: 82%;
+  object-fit: cover;
+  border: 1px solid rgba(143, 188, 59, 0.34);
+  border-radius: 50%;
+  clip-path: circle(49% at 50% 50%);
+  filter: saturate(0.95) contrast(1.06);
 }
 
 .brand-title {
   min-width: 0;
+  padding-top: 4px;
 }
 
 .eyebrow {
@@ -81,10 +136,13 @@ body {
 
 h1 {
   margin: 0;
-  color: #fffdf7;
+  color: #fffef8;
   font-size: clamp(2rem, 3.4vw, 3.35rem);
   line-height: 1;
   letter-spacing: 0;
+  text-shadow:
+    0 0 26px rgba(79, 180, 255, 0.14),
+    0 10px 30px rgba(0, 0, 0, 0.36);
   white-space: nowrap;
 }
 
@@ -164,17 +222,26 @@ h1 {
   }
 
   .welcome-copy-panel {
+    height: auto;
+    overflow: visible;
     padding: 28px clamp(18px, 5vw, 48px) 52px;
     box-shadow: none;
   }
 
-  .intro {
+  .brand-header {
     width: min(100%, 720px);
     margin: 0 auto;
   }
 
-  .brand-art {
-    width: clamp(108px, 27vw, 156px);
+  .intro {
+    overflow: visible;
+    padding-right: 0;
+    width: min(100%, 720px);
+    margin: 0 auto;
+  }
+
+  .brand-mark {
+    width: clamp(122px, 30vw, 174px);
   }
 }
 
@@ -184,11 +251,11 @@ h1 {
     min-height: 300px;
   }
   .brand-heading {
-    gap: 14px;
+    gap: 16px;
   }
 
-  .brand-art {
-    width: 102px;
+  .brand-mark {
+    width: 112px;
   }
 
   h1 {

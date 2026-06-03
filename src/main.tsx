@@ -438,18 +438,22 @@ function App() {
   return (
     <main className="welcome-page">
       <section className="welcome-copy-panel" aria-labelledby="welcome-title">
-        <article className="intro">
+        <header className="brand-header">
           <div className="brand-heading">
-            <img
-              className="brand-art"
-              src={`${import.meta.env.BASE_URL}ProjectFarPoint.png`}
-              alt="Project FarPoint logo with planet Earth in space"
-            />
+            <div className="brand-mark">
+              <img
+                className="brand-art"
+                src={`${import.meta.env.BASE_URL}ProjectFarPoint.png`}
+                alt="Project FarPoint logo with planet Earth in space"
+              />
+            </div>
             <div className="brand-title">
               <p className="eyebrow">Welcome to Project Far Point</p>
               <h1 id="welcome-title">Project Far Point</h1>
             </div>
           </div>
+        </header>
+        <article className="intro">
           <div className="welcome-copy">
             <p>
               Project Far Point (PFP) is a geo-blog documenting my attempt to
@@ -463,10 +467,10 @@ function App() {
             </p>
             <p>
               Voyager begins high in the remote Southern Alps of New Zealand and
-              travels, in imagination, 20,038 kilometers through Australia, Asia,
-              and Europe to its destination: the Cathedral of St. James in
+              travels, <i>in imagination</i>, 20,038 kilometers through Australia, Asia, over the summit of Mount Everest,
+              and through Europe to its destination: the Cathedral of St. James in
               Santiago de Compostela, Spain - the famed terminus of the Camino
-              de Santiago and the exact antipode of its starting point.
+              de Santiago and the exact opposite side of the Earth (antipode) of its starting point.
             </p>
             <p>
               The reality behind Voyager is far less direct, but no less
@@ -475,11 +479,11 @@ function App() {
               and spring adventures near my home in Calgary, Alberta, Voyager
               will also chronicle travels to all fifty U.S. states, Canada's
               thirteen provinces and territories, and walking explorations of
-              fifty of the world's great cities.
+              many of the world's great cities.
             </p>
             <p>
               The second half of the project, the Far Point Trail, is Voyager's
-              wild twin. It imagines an oceanic return voyage from Santiago back
+              wild twin. It imagines an oceanic return voyage from the cathedral in Santiago de Compostela back
               to the Southern Alps of New Zealand. Supporting that fictional
               route is a very real 20,038-kilometer wilderness journey linking
               some of North America's most iconic long-distance trails,
@@ -489,8 +493,9 @@ function App() {
               coastal trails.
             </p>
             <p>
-              Together, Voyager and the Far Point Trail will one day complete a
-              full circumnavigation of the Earth.
+              Together, Voyager and the Far Point Trail will one day complete a full virtual 
+               circumnavigation of the Earth.  Explore the map by clicking on the routes and markers to learn more about the journeys and follow along as the progress paths grow with each new adventure.
+               You will find photos, videos, and stories from the adventures, as well as reflections on the experience of connecting with the world through travel and imagination.
             </p>
             <p>
               The destination may be years away, but the adventure begins with
