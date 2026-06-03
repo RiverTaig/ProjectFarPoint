@@ -31,7 +31,7 @@ body {
 
 .welcome-page {
   display: grid;
-  grid-template-columns: minmax(380px, 0.86fr) minmax(460px, 1.14fr);
+  grid-template-columns: minmax(560px, 0.95fr) minmax(460px, 1.05fr);
   min-height: 100vh;
 }
 
@@ -52,7 +52,7 @@ body {
 
 .brand-header {
   flex: 0 0 auto;
-  width: min(100%, 1100px);
+  width: min(100%, 1120px);
 }
 
 .intro-shell {
@@ -61,7 +61,7 @@ body {
   grid-template-columns: minmax(0, 680px) minmax(220px, 320px);
   gap: clamp(34px, 4vw, 64px);
   min-height: 0;
-  width: min(100%, 1100px);
+  width: min(100%, 1120px);
 }
 
 .intro {
@@ -177,22 +177,28 @@ h1 {
 .journey-summary {
   align-self: start;
   display: grid;
-  gap: 14px;
+  gap: 18px;
   padding-top: 8px;
 }
 
 .summary-item {
-  padding: 18px 0;
+  padding: 18px 0 20px;
   border-top: 1px solid rgba(155, 228, 255, 0.16);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
-.summary-total {
+.summary-voyager {
   border-top-color: rgba(143, 188, 59, 0.32);
+}
+
+.summary-far-point {
+  border-top-color: rgba(79, 180, 255, 0.32);
 }
 
 .summary-kicker,
 .summary-label,
-.summary-value {
+.summary-progress-text,
+.summary-progress {
   display: block;
 }
 
@@ -204,19 +210,54 @@ h1 {
   text-transform: uppercase;
 }
 
-.summary-value {
+.summary-label {
   color: #fffef8;
-  font-size: clamp(1.9rem, 3.4vw, 3rem);
-  font-weight: 800;
-  line-height: 0.95;
-  text-shadow: 0 14px 30px rgba(0, 0, 0, 0.34);
+  font-size: clamp(1.04rem, 1.3vw, 1.22rem);
+  font-weight: 750;
+  line-height: 1.45;
 }
 
-.summary-label {
-  margin-top: 7px;
+.summary-progress-text {
+  margin-top: 14px;
   color: rgba(241, 234, 219, 0.78);
-  font-size: 0.86rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
   line-height: 1.45;
+  text-transform: uppercase;
+}
+
+.summary-progress-text strong {
+  color: #fffef8;
+  font-weight: 850;
+}
+
+.summary-progress {
+  position: relative;
+  height: 8px;
+  margin-top: 11px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.summary-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  box-shadow: 0 0 20px currentColor;
+}
+
+.summary-progress-voyager {
+  width: 60%;
+  color: #a6e031;
+  background: linear-gradient(90deg, #8fbc3b, #a6e031);
+}
+
+.summary-progress-far-point {
+  width: 50%;
+  color: #33c6ff;
+  background: linear-gradient(90deg, #4fb4ff, #33c6ff);
 }
 
 .summary-route {
@@ -304,23 +345,107 @@ h1 {
   border-color: rgba(155, 228, 255, 0.2);
 }
 
-@media (max-width: 980px) {
+@media (min-width: 981px) and (max-width: 1700px) {
   .welcome-page {
-    grid-template-columns: 1fr;
-  }
-
-  .globe-panel {
-    position: relative;
-    order: -1;
-    height: min(68vh, 560px);
-    min-height: 360px;
+    grid-template-columns: minmax(680px, 54vw) minmax(420px, 1fr);
   }
 
   .welcome-copy-panel {
-    height: auto;
-    overflow: visible;
+    padding: clamp(26px, 3.4vw, 48px);
+  }
+
+  .brand-header {
+    width: min(100%, 820px);
+  }
+
+  .brand-heading {
+    gap: clamp(18px, 2.4vw, 28px);
+  }
+
+  .brand-mark {
+    width: clamp(104px, 10vw, 144px);
+  }
+
+  h1 {
+    font-size: clamp(2.05rem, 3.2vw, 2.8rem);
+  }
+
+  .intro-shell {
+    grid-template-columns: 1fr;
+    gap: clamp(24px, 3vw, 34px);
+    width: min(100%, 820px);
+  }
+
+  .journey-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: clamp(18px, 2.4vw, 28px);
+    padding-top: 0;
+  }
+
+  .summary-route {
+    grid-column: 1 / -1;
+    padding-top: 0;
+  }
+
+  .intro {
+    width: min(100%, 820px);
+  }
+
+  .welcome-copy {
+    max-width: 68ch;
+  }
+}
+
+@media (min-width: 981px) and (max-width: 1220px) {
+  .welcome-page {
+    grid-template-columns: minmax(600px, 58vw) minmax(360px, 1fr);
+  }
+
+  .brand-heading {
+    align-items: flex-start;
+  }
+
+  h1 {
+    font-size: clamp(1.85rem, 3.4vw, 2.35rem);
+    white-space: normal;
+  }
+}
+
+@media (max-width: 980px) {
+  html,
+  body,
+  #root {
+    height: 100%;
+    overflow: hidden;
+  }
+
+  .welcome-page {
+    grid-template-columns: 1fr;
+    grid-template-rows: 50svh 50svh;
+    height: 100svh;
+    min-height: 100svh;
+    overflow: hidden;
+  }
+
+  .globe-panel {
+    position: sticky;
+    top: 0;
+    order: -1;
+    height: 50svh;
+    min-height: 0;
+  }
+
+  .welcome-copy-panel {
+    height: 50svh;
+    min-height: 0;
+    overflow-y: auto;
     padding: 28px clamp(18px, 5vw, 48px) 52px;
     box-shadow: none;
+    scrollbar-width: none;
+  }
+
+  .welcome-copy-panel::-webkit-scrollbar {
+    display: none;
   }
 
   .brand-header {
@@ -342,7 +467,7 @@ h1 {
 
   .journey-summary {
     order: -1;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 16px;
     padding-top: 0;
   }
@@ -359,8 +484,8 @@ h1 {
 
 @media (max-width: 560px) {
   .globe-panel {
-    height: 52vh;
-    min-height: 300px;
+    height: 50svh;
+    min-height: 0;
   }
   .brand-heading {
     gap: 16px;
@@ -376,9 +501,5 @@ h1 {
 
   .journey-summary {
     grid-template-columns: 1fr;
-  }
-
-  .summary-value {
-    font-size: 1.8rem;
   }
 }
