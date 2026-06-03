@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Earth">
+  <defs>
+    <radialGradient id="ocean" cx="32%" cy="24%" r="72%">
+      <stop offset="0" stop-color="#8ee9ff" />
+      <stop offset="0.46" stop-color="#1287f2" />
+      <stop offset="1" stop-color="#07326f" />
+    </radialGradient>
+    <linearGradient id="shine" x1="12" x2="48" y1="8" y2="50">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.85" />
+      <stop offset="0.28" stop-color="#ffffff" stop-opacity="0.18" />
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0" />
+    </linearGradient>
+  </defs>
+  <circle cx="32" cy="32" r="29" fill="#051224" />
+  <circle cx="32" cy="32" r="26" fill="url(#ocean)" />
+  <path
+    fill="#78c743"
+    d="M18 21c4-5 11-8 17-7 3 1 6 2 8 4-4 0-7 2-8 5-1 2 1 4 3 5 3 1 6-1 9 1 2 2 1 6-1 8-3 3-8 2-11 5-3 2-3 5-2 9-6 0-12-2-16-7 3-2 4-5 3-8-1-4-6-4-8-7 0-3 3-5 6-8Z"
+  />
+  <path
+    fill="#b6df5b"
+    d="M42 15c6 3 11 9 13 16-4-1-7-2-10-5-3-2-4-6-3-11ZM19 45c3 4 7 7 12 8-2-5-6-8-12-8Z"
+  />
+  <path
+    fill="url(#shine)"
+    d="M13 25c4-10 13-17 24-17 5 0 10 2 14 5-7-3-17-2-25 3-7 4-11 10-13 17-1-3-1-5 0-8Z"
+  />
+  <circle cx="32" cy="32" r="27" fill="none" stroke="#9be4ff" stroke-opacity="0.55" stroke-width="2" />
+</svg>
