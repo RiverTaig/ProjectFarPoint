@@ -1,10 +1,13 @@
-import { StrictMode, useEffect, useRef } from 'react';
+import { StrictMode, useEffect, useRef, useState } from 'react';
+import type { FormEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import '@arcgis/core/assets/esri/themes/dark/main.css';
 import Graphic from '@arcgis/core/Graphic.js';
 import GraphicsLayer from '@arcgis/core/layers/GraphicsLayer.js';
 import Map from '@arcgis/core/Map.js';
 import SceneView from '@arcgis/core/views/SceneView.js';
+import type { Session } from '@supabase/supabase-js';
+import { supabase } from './supabaseClient';
 import './styles.css';
 
 type LatLon = {
@@ -13,6 +16,30 @@ type LatLon = {
 };
 
 type Vector3 = [number, number, number];
+
+type ProjectActivity = {
+  id: string;
+  name: string;
+  sport_type: string | null;
+  geometry_simplified_medium: {
+    type: 'LineString';
+    coordinates: number[][];
+  } | null;
+  geometry_geojson: {
+    type: 'LineString';
+    coordinates: number[][];
+  } | null;
+};
+
+type StravaActivity = {
+  id: number;
+  name: string;
+  sport_type: string;
+  start_date: string;
+  distance: number;
+  moving_time: number;
+  total_elevation_gain: number;
+};
 
 const voyagerStart: LatLon = {
   latitude: -42.880468,
@@ -35,7 +62,7 @@ const calgary: LatLon = {
 };
 
 const halfJourneyKilometers = 20038;
-const sampleProgressKilometers = 10000;
+const sampleProgressKilometers = 1000;
 
 const voyagerAntipode: LatLon = {
   latitude: -voyagerStart.latitude,
@@ -191,9 +218,21 @@ function createVoyagerProgressPath() {
 
 function createFarPointProgressPath() {
   return createAntipodalRoutePath(
-    voyagerStart,
+    voyagerAntipode,
     everestAntipode,
     Math.PI * (sampleProgressKilometers / halfJourneyKilometers),
+  );
+}
+
+function createActivityPaths(activity: ProjectActivity) {
+  const geometry = activity.geometry_geojson ?? activity.geometry_simplified_medium;
+
+  if (!geometry?.coordinates?.length) {
+    return [];
+  }
+
+  return splitPathAtAntimeridian(
+    geometry.coordinates.map(([longitude, latitude]) => [longitude, latitude]),
   );
 }
 
@@ -225,7 +264,7 @@ function GlobeView() {
       },
       symbol: {
         type: 'simple-line',
-        color: [112, 130, 84, 0.62],
+        color: [78, 116, 138, 0.62],
         width: 3,
       },
       attributes: {
@@ -245,7 +284,7 @@ function GlobeView() {
       },
       symbol: {
         type: 'simple-line',
-        color: [78, 116, 138, 0.62],
+        color: [112, 130, 84, 0.62],
         width: 3,
       },
       attributes: {
@@ -265,7 +304,7 @@ function GlobeView() {
       },
       symbol: {
         type: 'simple-line',
-        color: [166, 224, 49, 1],
+        color: [51, 198, 255, 1],
         width: 7,
       },
       attributes: {
@@ -283,7 +322,7 @@ function GlobeView() {
       },
       symbol: {
         type: 'simple-line',
-        color: [51, 198, 255, 1],
+        color: [166, 224, 49, 1],
         width: 7,
       },
       attributes: {
@@ -400,6 +439,56 @@ function GlobeView() {
     voyagerRouteLayer.add(calgaryLabel);
     map.add(voyagerRouteLayer);
 
+    if (supabase) {
+      supabase
+        .from('project_activities')
+        .select('id,name,sport_type,geometry_simplified_medium,geometry_geojson')
+        .not('geometry_geojson', 'is', null)
+        .then(({ data, error }) => {
+          if (error || !data?.length) {
+            return;
+          }
+
+          const importedActivitiesLayer = new GraphicsLayer({
+            title: 'Imported activities',
+            elevationInfo: {
+              mode: 'on-the-ground',
+            },
+          });
+
+          data.forEach((activity) => {
+            const paths = createActivityPaths(activity as ProjectActivity);
+
+            if (!paths.length) {
+              return;
+            }
+
+            importedActivitiesLayer.add(
+              new Graphic({
+                geometry: {
+                  type: 'polyline',
+                  paths,
+                  spatialReference: {
+                    wkid: 4326,
+                  },
+                },
+                symbol: {
+                  type: 'simple-line',
+                  color: [255, 253, 247, 0.88],
+                  width: 3,
+                },
+                attributes: {
+                  name: activity.name,
+                  sport_type: activity.sport_type,
+                },
+              }),
+            );
+          });
+
+          map.add(importedActivitiesLayer);
+        });
+    }
+
     const view = new SceneView({
       container: sceneNode.current,
       map,
@@ -434,7 +523,540 @@ function GlobeView() {
   return <div className="globe-view" ref={sceneNode} aria-label="3D globe" />;
 }
 
+type AuthMode = 'signIn' | 'signUp' | 'reset' | 'updatePassword';
+
+const ownerEmail = 'rivermadsen23@gmail.com';
+
+function getAuthRedirectUrl() {
+  return `${window.location.origin}${window.location.pathname}?adminPage`;
+}
+
+function isProjectOwner(session: Session | null) {
+  return session?.user.email?.toLowerCase() === ownerEmail;
+}
+
+function useSupabaseSession() {
+  const [session, setSession] = useState<Session | null>(null);
+
+  useEffect(() => {
+    if (!supabase) {
+      return;
+    }
+
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+    });
+
+    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+    });
+
+    return () => {
+      data.subscription.unsubscribe();
+    };
+  }, []);
+
+  return session;
+}
+
+type AuthPanelProps = {
+  session: Session | null;
+};
+
+function AuthPanel({ session }: AuthPanelProps) {
+  const [mode, setMode] = useState<AuthMode>('signIn');
+  const [isOpen, setIsOpen] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [status, setStatus] = useState('');
+  const [error, setError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!supabase) {
+      return;
+    }
+
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session) {
+        setEmail(data.session.user.email ?? '');
+      }
+    });
+
+    const { data } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        setIsOpen(true);
+        setMode('updatePassword');
+        setStatus('Enter a new password to finish resetting your account.');
+      }
+    });
+
+    return () => {
+      data.subscription.unsubscribe();
+    };
+  }, []);
+
+  if (!supabase) {
+    return (
+      <div className="auth-panel auth-panel-muted">
+        Add Supabase environment variables to enable login.
+      </div>
+    );
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError('');
+    setStatus('');
+    setIsSubmitting(true);
+
+    try {
+      if (!supabase) {
+        throw new Error('Supabase is not configured.');
+      }
+
+      if (mode === 'signIn') {
+        const { error: signInError } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
+
+        if (signInError) {
+          throw signInError;
+        }
+
+        setStatus('Signed in.');
+        setIsOpen(false);
+      }
+
+      if (mode === 'signUp') {
+        const { error: signUpError } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            emailRedirectTo: getAuthRedirectUrl(),
+          },
+        });
+
+        if (signUpError) {
+          throw signUpError;
+        }
+
+        setStatus('Check your email to verify your account.');
+      }
+
+      if (mode === 'reset') {
+        const { error: resetError } = await supabase.auth.resetPasswordForEmail(
+          email,
+          {
+            redirectTo: getAuthRedirectUrl(),
+          },
+        );
+
+        if (resetError) {
+          throw resetError;
+        }
+
+        setStatus('Check your email for a password reset link.');
+      }
+
+      if (mode === 'updatePassword') {
+        const { error: updateError } = await supabase.auth.updateUser({
+          password,
+        });
+
+        if (updateError) {
+          throw updateError;
+        }
+
+        setPassword('');
+        setMode('signIn');
+        setStatus('Password updated.');
+      }
+    } catch (submitError) {
+      setError(
+        submitError instanceof Error
+          ? submitError.message
+          : 'Something went wrong.',
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handleSignOut() {
+    if (!supabase) {
+      return;
+    }
+
+    setError('');
+    setStatus('');
+    setIsSubmitting(true);
+
+    const { error: signOutError } = await supabase.auth.signOut();
+
+    if (signOutError) {
+      setError(signOutError.message);
+    } else {
+      setIsOpen(false);
+      setEmail('');
+      setPassword('');
+    }
+
+    setIsSubmitting(false);
+  }
+
+  const buttonText = {
+    signIn: 'Sign in',
+    signUp: 'Create account',
+    reset: 'Send reset link',
+    updatePassword: 'Update password',
+  }[mode];
+
+  return (
+    <div className="auth-panel">
+      <div className="auth-row">
+        <button
+          className="auth-toggle"
+          type="button"
+          onClick={() => setIsOpen((wasOpen) => !wasOpen)}
+        >
+          {session ? session.user.email : 'Log in'}
+        </button>
+        {isProjectOwner(session) && (
+          <a className="owner-action-link" href="?adminPage=addActivity">
+            Add Activity to Project Far Point
+          </a>
+        )}
+      </div>
+
+      {isOpen && (
+        <div className="auth-popover">
+          {session && mode !== 'updatePassword' ? (
+            <>
+              <p className="auth-status">Signed in as {session.user.email}</p>
+              <button
+                className="auth-submit"
+                type="button"
+                onClick={handleSignOut}
+                disabled={isSubmitting}
+              >
+                Sign out
+              </button>
+            </>
+          ) : (
+            <form className="auth-form" onSubmit={handleSubmit}>
+              <label>
+                Email
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  required={mode !== 'updatePassword'}
+                  autoComplete="email"
+                />
+              </label>
+
+              {mode !== 'reset' && (
+                <label>
+                  Password
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    required
+                    minLength={6}
+                    autoComplete={
+                      mode === 'signIn' ? 'current-password' : 'new-password'
+                    }
+                  />
+                </label>
+              )}
+
+              <button
+                className="auth-submit"
+                type="submit"
+                disabled={isSubmitting}
+              >
+                {isSubmitting ? 'Working...' : buttonText}
+              </button>
+
+              <div className="auth-actions">
+                {mode !== 'signIn' && (
+                  <button type="button" onClick={() => setMode('signIn')}>
+                    Sign in
+                  </button>
+                )}
+                {mode !== 'signUp' && mode !== 'updatePassword' && (
+                  <button type="button" onClick={() => setMode('signUp')}>
+                    Create account
+                  </button>
+                )}
+                {mode !== 'reset' && mode !== 'updatePassword' && (
+                  <button type="button" onClick={() => setMode('reset')}>
+                    Forgot password
+                  </button>
+                )}
+              </div>
+            </form>
+          )}
+
+          {status && <p className="auth-status">{status}</p>}
+          {error && <p className="auth-error">{error}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+type AddActivityPageProps = {
+  session: Session | null;
+};
+
+function AddActivityPage({ session }: AddActivityPageProps) {
+  const [status, setStatus] = useState('');
+  const [error, setError] = useState('');
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [activities, setActivities] = useState<StravaActivity[]>([]);
+  const [selectedActivityId, setSelectedActivityId] = useState<number | null>(null);
+  const [isLoadingActivities, setIsLoadingActivities] = useState(false);
+  const [isImportingActivity, setIsImportingActivity] = useState(false);
+  const searchParams = new URLSearchParams(window.location.search);
+  const stravaStatus = searchParams.get('strava');
+
+  async function handleLoadActivities() {
+    setStatus('');
+    setError('');
+    setIsLoadingActivities(true);
+
+    try {
+      if (!supabase) {
+        throw new Error('Supabase is not configured.');
+      }
+
+      const { data, error: functionError } = await supabase.functions.invoke(
+        'strava-list-activities',
+        {
+          body: {
+            page: 1,
+            perPage: 30,
+          },
+        },
+      );
+
+      if (functionError) {
+        throw functionError;
+      }
+
+      setActivities(data.activities ?? []);
+      setSelectedActivityId(data.activities?.[0]?.id ?? null);
+      setStatus(`Loaded ${data.activities?.length ?? 0} Strava activities.`);
+    } catch (loadError) {
+      setError(
+        loadError instanceof Error
+          ? loadError.message
+          : 'Could not load Strava activities.',
+      );
+    } finally {
+      setIsLoadingActivities(false);
+    }
+  }
+
+  async function handleImportActivity() {
+    setStatus('');
+    setError('');
+
+    if (!selectedActivityId) {
+      setError('Choose an activity to import.');
+      return;
+    }
+
+    setIsImportingActivity(true);
+
+    try {
+      if (!supabase) {
+        throw new Error('Supabase is not configured.');
+      }
+
+      const { data, error: functionError } = await supabase.functions.invoke(
+        'strava-import-activity',
+        {
+          body: {
+            activityId: selectedActivityId,
+          },
+        },
+      );
+
+      if (functionError) {
+        throw functionError;
+      }
+
+      setStatus(`Imported ${data.activity?.name ?? 'activity'}.`);
+    } catch (importError) {
+      setError(
+        importError instanceof Error
+          ? importError.message
+          : 'Could not import Strava activity.',
+      );
+    } finally {
+      setIsImportingActivity(false);
+    }
+  }
+
+  async function handleConnectStrava() {
+    setStatus('');
+    setError('');
+    setIsConnecting(true);
+
+    try {
+      if (!supabase) {
+        throw new Error('Supabase is not configured.');
+      }
+
+      if (!isProjectOwner(session)) {
+        throw new Error('Only the Project Far Point owner can connect Strava.');
+      }
+
+      const { data, error: functionError } = await supabase.functions.invoke(
+        'strava-auth-start',
+        {
+          body: {
+            returnTo: window.location.href,
+          },
+        },
+      );
+
+      if (functionError) {
+        throw functionError;
+      }
+
+      if (!data?.authorizationUrl) {
+        throw new Error('The Strava authorization URL was not returned.');
+      }
+
+      window.location.assign(data.authorizationUrl);
+    } catch (connectError) {
+      setError(
+        connectError instanceof Error
+          ? connectError.message
+          : 'Could not start Strava authorization.',
+      );
+      setIsConnecting(false);
+    }
+  }
+
+  return (
+    <main className="activity-admin-page">
+      <section className="activity-admin-shell">
+        <header className="activity-admin-header">
+          <a className="back-link" href="?adminPage">
+            Back to Project Far Point
+          </a>
+          <AuthPanel session={session} />
+        </header>
+
+        <div className="activity-admin-content">
+          <p className="eyebrow">Project Far Point Admin</p>
+          <h1>Add Activity to Project Far Point</h1>
+          <p className="activity-admin-copy">
+            Connect Strava, choose one completed activity, and import its
+            geometry for display on the globe.
+          </p>
+
+          {stravaStatus === 'connected' && (
+            <p className="activity-success">
+              Strava is connected. The next step is listing your activities for
+              import.
+            </p>
+          )}
+
+          <button
+            className="strava-connect-button"
+            type="button"
+            onClick={handleConnectStrava}
+            disabled={isConnecting || !isProjectOwner(session)}
+          >
+            {isConnecting ? 'Opening Strava...' : 'Connect Strava'}
+          </button>
+
+          <div className="activity-import-panel">
+            <button
+              className="activity-secondary-button"
+              type="button"
+              onClick={handleLoadActivities}
+              disabled={isLoadingActivities || !isProjectOwner(session)}
+            >
+              {isLoadingActivities ? 'Loading activities...' : 'Load Strava activities'}
+            </button>
+
+            {activities.length > 0 && (
+              <>
+                <div className="activity-list" role="listbox" aria-label="Strava activities">
+                  {activities.map((activity) => (
+                    <button
+                      className={
+                        activity.id === selectedActivityId
+                          ? 'activity-option activity-option-selected'
+                          : 'activity-option'
+                      }
+                      type="button"
+                      key={activity.id}
+                      onClick={() => setSelectedActivityId(activity.id)}
+                    >
+                      <span>{activity.name}</span>
+                      <small>
+                        {new Date(activity.start_date).toLocaleDateString()} ·{' '}
+                        {(activity.distance / 1000).toFixed(2)} km ·{' '}
+                        {activity.sport_type}
+                      </small>
+                    </button>
+                  ))}
+                </div>
+
+                <button
+                  className="strava-connect-button"
+                  type="button"
+                  onClick={handleImportActivity}
+                  disabled={isImportingActivity || !selectedActivityId}
+                >
+                  {isImportingActivity ? 'Importing...' : 'Import selected activity'}
+                </button>
+              </>
+            )}
+          </div>
+
+          {!isProjectOwner(session) && (
+            <p className="activity-error">
+              Sign in as the Project Far Point owner to import Strava
+              activities.
+            </p>
+          )}
+          {status && <p className="activity-status">{status}</p>}
+          {error && <p className="activity-error">{error}</p>}
+        </div>
+      </section>
+    </main>
+  );
+}
+
 function App() {
+  const session = useSupabaseSession();
+  const searchParams = new URLSearchParams(window.location.search);
+  const showAdminPage = searchParams.has('adminPage');
+  const adminPage = searchParams.get('adminPage');
+
+  if (!showAdminPage) {
+    return (
+      <main className="coming-soon-page">
+        <h1>Coming Soon</h1>
+      </main>
+    );
+  }
+
+  if (adminPage === 'addActivity') {
+    return <AddActivityPage session={session} />;
+  }
+
   return (
     <main className="welcome-page">
       <section className="welcome-copy-panel" aria-labelledby="welcome-title">
@@ -452,6 +1074,7 @@ function App() {
               <h1 id="welcome-title">Project Far Point</h1>
             </div>
           </div>
+          <AuthPanel session={session} />
         </header>
         <div className="intro-shell">
           <article className="intro">
@@ -511,7 +1134,7 @@ function App() {
               <span className="summary-kicker journey-voyager">Voyager</span>
               <span className="summary-label">New Zealand to Santiago de Compostela</span>
               <span className="summary-progress-text">
-                <strong>12,001 km</strong> of 20,038 km completed <strong>(60%)</strong>
+                <strong>1,000 km</strong> of 20,038 km completed <strong>(5%)</strong>
               </span>
               <span className="summary-progress" aria-hidden="true">
                 <span className="summary-progress-fill summary-progress-voyager" />
@@ -521,7 +1144,7 @@ function App() {
               <span className="summary-kicker journey-far-point">Far Point Trail</span>
               <span className="summary-label">Santiago de Compostela to New Zealand</span>
               <span className="summary-progress-text">
-                <strong>10,000 km</strong> of 20,038 km completed <strong>(50%)</strong>
+                <strong>1,000 km</strong> of 20,038 km completed <strong>(5%)</strong>
               </span>
               <span className="summary-progress" aria-hidden="true">
                 <span className="summary-progress-fill summary-progress-far-point" />
