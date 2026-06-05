@@ -6,6 +6,40 @@ import {
 
 type Coordinate = [number, number] | [number, number, number];
 
+type ActivityMetadata = {
+  city?: string;
+  state?: string;
+  province?: string;
+  country?: string;
+  correctedDistance?: number | string | null;
+  distanceMadeGood?: number | string | null;
+  trailName?: string;
+  pfpType?: string;
+  textDescription?: string;
+};
+
+function cleanText(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function cleanNumber(value: unknown) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  const numberValue = Number(value);
+
+  return Number.isFinite(numberValue) ? numberValue : null;
+}
+
+function cleanPfpType(value: unknown) {
+  if (value === 'Voyager' || value === 'Far Point Trail') {
+    return value;
+  }
+
+  return null;
+}
+
 function perpendicularDistance(point: Coordinate, start: Coordinate, end: Coordinate) {
   const [x, y] = point;
   const [x1, y1] = start;
@@ -68,7 +102,10 @@ Deno.serve(async (request) => {
     }
 
     const user = await getAuthorizedUser(request);
-    const { activityId } = await request.json();
+    const { activityId, metadata = {} } = (await request.json()) as {
+      activityId?: number | string;
+      metadata?: ActivityMetadata;
+    };
 
     if (!activityId) {
       return Response.json(
@@ -92,6 +129,11 @@ Deno.serve(async (request) => {
     }
 
     const activity = await activityResponse.json();
+    const country = cleanText(metadata.country) ?? cleanText(activity.location_country);
+    const state = cleanText(metadata.state) ?? cleanText(activity.location_state);
+    const province =
+      cleanText(metadata.province) ??
+      (country === 'Canada' ? cleanText(activity.location_state) : null);
     const streamsUrl = new URL(
       `https://www.strava.com/api/v3/activities/${activityId}/streams`,
     );
@@ -143,6 +185,15 @@ Deno.serve(async (request) => {
           moving_time_seconds: activity.moving_time,
           elapsed_time_seconds: activity.elapsed_time,
           total_elevation_gain_meters: activity.total_elevation_gain,
+          city: cleanText(metadata.city) ?? cleanText(activity.location_city),
+          state,
+          province,
+          country,
+          corrected_distance: cleanNumber(metadata.correctedDistance),
+          distance_made_good: cleanNumber(metadata.distanceMadeGood),
+          trail_name: cleanText(metadata.trailName),
+          pfp_type: cleanPfpType(metadata.pfpType),
+          text_description: cleanText(metadata.textDescription),
           geometry_geojson: geometry,
           geometry_simplified_low: {
             type: 'LineString',

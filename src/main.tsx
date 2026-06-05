@@ -1,7 +1,8 @@
-import { StrictMode, useEffect, useRef, useState } from 'react';
-import type { FormEvent } from 'react';
+import { StrictMode, useCallback, useEffect, useRef, useState } from 'react';
+import type { ChangeEvent, FormEvent, ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import '@arcgis/core/assets/esri/themes/dark/main.css';
+import Camera from '@arcgis/core/Camera.js';
 import Graphic from '@arcgis/core/Graphic.js';
 import GraphicsLayer from '@arcgis/core/layers/GraphicsLayer.js';
 import Map from '@arcgis/core/Map.js';
@@ -21,6 +22,15 @@ type ProjectActivity = {
   id: string;
   name: string;
   sport_type: string | null;
+  pfp_type: 'Voyager' | 'Far Point Trail' | null;
+  trail_name: string | null;
+  city: string | null;
+  state: string | null;
+  province: string | null;
+  country: string | null;
+  corrected_distance: number | null;
+  distance_made_good: number | null;
+  text_description: string | null;
   geometry_simplified_medium: {
     type: 'LineString';
     coordinates: number[][];
@@ -31,6 +41,22 @@ type ProjectActivity = {
   } | null;
 };
 
+type SelectedProjectActivity = Pick<
+  ProjectActivity,
+  | 'id'
+  | 'name'
+  | 'sport_type'
+  | 'pfp_type'
+  | 'trail_name'
+  | 'city'
+  | 'state'
+  | 'province'
+  | 'country'
+  | 'corrected_distance'
+  | 'distance_made_good'
+  | 'text_description'
+>;
+
 type StravaActivity = {
   id: number;
   name: string;
@@ -39,6 +65,21 @@ type StravaActivity = {
   distance: number;
   moving_time: number;
   total_elevation_gain: number;
+  location_city: string | null;
+  location_state: string | null;
+  location_country: string | null;
+};
+
+type ActivityMetadata = {
+  city: string;
+  state: string;
+  province: string;
+  country: string;
+  correctedDistance: string;
+  distanceMadeGood: string;
+  trailName: string;
+  pfpType: 'Voyager' | 'Far Point Trail';
+  textDescription: string;
 };
 
 const voyagerStart: LatLon = {
@@ -63,6 +104,7 @@ const calgary: LatLon = {
 
 const halfJourneyKilometers = 20038;
 const sampleProgressKilometers = 1000;
+const guideRouteWidth = 3.4;
 
 const voyagerAntipode: LatLon = {
   latitude: -voyagerStart.latitude,
@@ -236,13 +278,222 @@ function createActivityPaths(activity: ProjectActivity) {
   );
 }
 
-function GlobeView() {
+function getActivityLineColor(activity: ProjectActivity): [number, number, number, number] {
+  if (activity.pfp_type === 'Far Point Trail') {
+    return [166, 224, 49, 0.96];
+  }
+
+  return [51, 198, 255, 0.96];
+}
+
+function createActivityLineSymbol(activity: ProjectActivity, isSelected = false) {
+  return {
+    type: 'simple-line',
+    color: isSelected ? [255, 220, 70, 1] : getActivityLineColor(activity),
+    width: isSelected ? 7 : 4,
+  } as const;
+}
+
+function createActivityMetadata(activity?: StravaActivity): ActivityMetadata {
+  const country = activity?.location_country ?? '';
+  const region = activity?.location_state ?? '';
+
+  return {
+    city: activity?.location_city ?? '',
+    state: country && country !== 'Canada' ? region : '',
+    province: country === 'Canada' ? region : '',
+    country,
+    correctedDistance: activity ? (activity.distance / 1000).toFixed(2) : '',
+    distanceMadeGood: '',
+    trailName: '',
+    pfpType: 'Voyager',
+    textDescription: '',
+  };
+}
+
+function createLoremIpsumDescription() {
+  const paragraphs = [
+    'Lorem ipsum dolor sit amet, consectetur adipiscing elit. Curabitur vitae mauris at neque tincidunt dictum. Integer accumsan, sapien quis facilisis pretium, arcu mauris tempor ipsum, vitae viverra justo magna non velit. Sed non sem euismod, vehicula lectus sed, aliquet neque. Donec luctus, nisl at posuere commodo, metus justo ultrices ligula, vitae pulvinar nunc libero at est. Praesent commodo augue sit amet mi varius, sed dictum nibh hendrerit.',
+    'Vestibulum ante ipsum primis in faucibus orci luctus et ultrices posuere cubilia curae; Aliquam erat volutpat. Nulla facilisi. Pellentesque habitant morbi tristique senectus et netus et malesuada fames ac turpis egestas. "Quoted trail notes" and single-quoted observations can live here safely because this text is stored as data, not HTML. Suspendisse potenti. Aenean fermentum, risus vitae posuere suscipit, arcu lacus dignissim augue, id convallis urna magna in arcu.',
+    'Morbi finibus magna id velit tincidunt, a posuere justo luctus. Nam ullamcorper, nisl vel tincidunt consequat, massa erat pharetra justo, at dictum quam velit nec neque. Donec sed augue ac sapien facilisis interdum. Etiam consequat, ipsum at aliquet tincidunt, lectus risus porttitor orci, non malesuada lectus urna id turpis. Vivamus feugiat, eros a ullamcorper gravida, mi arcu blandit magna, vel varius mi mauris sed lacus.',
+  ];
+
+  return paragraphs.join('\n\n').slice(0, 1000);
+}
+
+function formatKilometers(value: number | null) {
+  if (typeof value !== 'number') {
+    return null;
+  }
+
+  return `${value.toLocaleString(undefined, {
+    maximumFractionDigits: 2,
+  })} km`;
+}
+
+const youtubeUrlPattern = /https?:\/\/(?:www\.|m\.)?(?:youtube\.com|youtu\.be)\/[^\s<>"']+/gi;
+const trailingUrlPunctuationPattern = /[),.;:!?]+$/;
+
+function parseYouTubeStartSeconds(startTime: string) {
+  if (/^\d+$/.test(startTime)) {
+    return startTime;
+  }
+
+  const hours = Number(startTime.match(/(\d+)h/)?.[1] ?? 0);
+  const minutes = Number(startTime.match(/(\d+)m/)?.[1] ?? 0);
+  const seconds = Number(startTime.match(/(\d+)s/)?.[1] ?? 0);
+  const totalSeconds = hours * 3600 + minutes * 60 + seconds;
+
+  return totalSeconds > 0 ? String(totalSeconds) : '';
+}
+
+function getYouTubeEmbedUrl(rawUrl: string) {
+  try {
+    const parsedUrl = new URL(rawUrl);
+    const hostname = parsedUrl.hostname.replace(/^(www|m)\./, '');
+    let videoId: string | null = null;
+
+    if (hostname === 'youtu.be') {
+      videoId = parsedUrl.pathname.split('/').filter(Boolean)[0] ?? null;
+    }
+
+    if (hostname === 'youtube.com') {
+      if (parsedUrl.pathname === '/watch') {
+        videoId = parsedUrl.searchParams.get('v');
+      } else {
+        const [, route, id] = parsedUrl.pathname.split('/');
+
+        if (['embed', 'shorts', 'live'].includes(route)) {
+          videoId = id ?? null;
+        }
+      }
+    }
+
+    if (!videoId) {
+      return null;
+    }
+
+    const embedUrl = new URL(
+      `https://www.youtube-nocookie.com/embed/${encodeURIComponent(videoId)}`,
+    );
+    const playlistId = parsedUrl.searchParams.get('list');
+    const startTime = parsedUrl.searchParams.get('t') ?? parsedUrl.searchParams.get('start');
+
+    if (playlistId) {
+      embedUrl.searchParams.set('list', playlistId);
+    }
+
+    if (startTime) {
+      const startSeconds = parseYouTubeStartSeconds(startTime);
+
+      if (startSeconds) {
+        embedUrl.searchParams.set('start', startSeconds);
+      }
+    }
+
+    return embedUrl.toString();
+  } catch {
+    return null;
+  }
+}
+
+function splitTrailingUrlPunctuation(url: string) {
+  const punctuation = url.match(trailingUrlPunctuationPattern)?.[0] ?? '';
+
+  return {
+    url: punctuation ? url.slice(0, -punctuation.length) : url,
+    punctuation,
+  };
+}
+
+async function playOpeningGlobeAnimation(view: SceneView) {
+  const finalCamera = new Camera({
+    position: {
+      longitude: -3.7,
+      latitude: 39.8,
+      z: 6500000,
+    },
+    heading: 0,
+    tilt: 0,
+  });
+
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    await view.goTo(finalCamera, { animate: false });
+    return;
+  }
+
+  const cameraStops = [
+    new Camera({
+      position: {
+        longitude: -58,
+        latitude: 18,
+        z: 23000000,
+      },
+      heading: 0,
+      tilt: 0,
+    }),
+    new Camera({
+      position: {
+        longitude: -12,
+        latitude: 33,
+        z: 12500000,
+      },
+      heading: 0,
+      tilt: 0,
+    }),
+    finalCamera,
+  ];
+
+  for (const camera of cameraStops) {
+    await view.goTo(camera, {
+      duration: 4200,
+      easing: 'ease-in-out',
+    });
+  }
+}
+
+type GlobeViewProps = {
+  selectedActivityId: string | null;
+  onActivitySelect: (activity: SelectedProjectActivity) => void;
+};
+
+function GlobeView({ selectedActivityId, onActivitySelect }: GlobeViewProps) {
   const sceneNode = useRef<HTMLDivElement | null>(null);
+  const importedActivityGraphics = useRef(new globalThis.Map<string, Graphic>());
+  const selectedActivityGraphic = useRef<Graphic | null>(null);
+
+  useEffect(() => {
+    const previousGraphic = selectedActivityGraphic.current;
+
+    if (previousGraphic) {
+      previousGraphic.symbol = createActivityLineSymbol(
+        previousGraphic.attributes.activity as ProjectActivity,
+      );
+      selectedActivityGraphic.current = null;
+    }
+
+    if (!selectedActivityId) {
+      return;
+    }
+
+    const nextGraphic = importedActivityGraphics.current.get(selectedActivityId);
+
+    if (nextGraphic) {
+      nextGraphic.symbol = createActivityLineSymbol(
+        nextGraphic.attributes.activity as ProjectActivity,
+        true,
+      );
+      selectedActivityGraphic.current = nextGraphic;
+    }
+  }, [selectedActivityId]);
 
   useEffect(() => {
     if (!sceneNode.current) {
       return;
     }
+
+    let isDestroyed = false;
+    let importedActivitiesLayer: GraphicsLayer | null = null;
 
     const map = new Map({
       basemap: 'hybrid',
@@ -264,8 +515,8 @@ function GlobeView() {
       },
       symbol: {
         type: 'simple-line',
-        color: [78, 116, 138, 0.62],
-        width: 3,
+        color: [76, 143, 174, 0.7],
+        width: guideRouteWidth,
       },
       attributes: {
         name: 'Voyager',
@@ -285,7 +536,7 @@ function GlobeView() {
       symbol: {
         type: 'simple-line',
         color: [112, 130, 84, 0.62],
-        width: 3,
+        width: guideRouteWidth,
       },
       attributes: {
         name: 'Far Point Trail',
@@ -442,14 +693,16 @@ function GlobeView() {
     if (supabase) {
       supabase
         .from('project_activities')
-        .select('id,name,sport_type,geometry_simplified_medium,geometry_geojson')
+        .select(
+          'id,name,sport_type,pfp_type,trail_name,city,state,province,country,corrected_distance,distance_made_good,text_description,geometry_simplified_medium,geometry_geojson',
+        )
         .not('geometry_geojson', 'is', null)
         .then(({ data, error }) => {
-          if (error || !data?.length) {
+          if (isDestroyed || error || !data?.length) {
             return;
           }
 
-          const importedActivitiesLayer = new GraphicsLayer({
+          importedActivitiesLayer = new GraphicsLayer({
             title: 'Imported activities',
             elevationInfo: {
               mode: 'on-the-ground',
@@ -457,32 +710,32 @@ function GlobeView() {
           });
 
           data.forEach((activity) => {
-            const paths = createActivityPaths(activity as ProjectActivity);
+            const projectActivity = activity as ProjectActivity;
+            const paths = createActivityPaths(projectActivity);
 
             if (!paths.length) {
               return;
             }
 
-            importedActivitiesLayer.add(
-              new Graphic({
-                geometry: {
-                  type: 'polyline',
-                  paths,
-                  spatialReference: {
-                    wkid: 4326,
-                  },
+            const activityGraphic = new Graphic({
+              geometry: {
+                type: 'polyline',
+                paths,
+                spatialReference: {
+                  wkid: 4326,
                 },
-                symbol: {
-                  type: 'simple-line',
-                  color: [255, 253, 247, 0.88],
-                  width: 3,
-                },
-                attributes: {
-                  name: activity.name,
-                  sport_type: activity.sport_type,
-                },
-              }),
-            );
+              },
+              symbol: createActivityLineSymbol(projectActivity),
+              attributes: {
+                activityId: projectActivity.id,
+                name: projectActivity.name,
+                sport_type: projectActivity.sport_type,
+                activity: projectActivity,
+              },
+            });
+
+            importedActivityGraphics.current.set(projectActivity.id, activityGraphic);
+            importedActivitiesLayer?.add(activityGraphic);
           });
 
           map.add(importedActivitiesLayer);
@@ -514,11 +767,64 @@ function GlobeView() {
         components: ['zoom', 'navigation-toggle', 'compass'],
       },
     });
+    view.when(() => {
+      if (isDestroyed) {
+        return;
+      }
+
+      playOpeningGlobeAnimation(view).catch(() => {
+        // The animation may be interrupted if the user navigates away or moves the globe.
+      });
+    });
+    const clickHandle = view.on('click', async (event) => {
+      if (!importedActivitiesLayer) {
+        return;
+      }
+
+      const hitTest = await view.hitTest(event, {
+        include: importedActivitiesLayer,
+      });
+      const activityResult = hitTest.results.find((result) => {
+        const graphic = 'graphic' in result ? result.graphic : null;
+
+        return Boolean(graphic?.attributes?.activityId);
+      });
+      const graphic =
+        activityResult && 'graphic' in activityResult
+          ? activityResult.graphic
+          : null;
+      const activity = graphic?.attributes?.activity as
+        | SelectedProjectActivity
+        | undefined;
+
+      if (!graphic || !activity) {
+        return;
+      }
+
+      const previousGraphic = selectedActivityGraphic.current;
+
+      if (previousGraphic && previousGraphic !== graphic) {
+        previousGraphic.symbol = createActivityLineSymbol(
+          previousGraphic.attributes.activity as ProjectActivity,
+        );
+      }
+
+      graphic.symbol = createActivityLineSymbol(
+        graphic.attributes.activity as ProjectActivity,
+        true,
+      );
+      selectedActivityGraphic.current = graphic;
+      onActivitySelect(activity);
+    });
 
     return () => {
+      isDestroyed = true;
+      importedActivityGraphics.current.clear();
+      selectedActivityGraphic.current = null;
+      clickHandle.remove();
       view.destroy();
     };
-  }, []);
+  }, [onActivitySelect]);
 
   return <div className="globe-view" ref={sceneNode} aria-label="3D globe" />;
 }
@@ -819,10 +1125,38 @@ function AddActivityPage({ session }: AddActivityPageProps) {
   const [isConnecting, setIsConnecting] = useState(false);
   const [activities, setActivities] = useState<StravaActivity[]>([]);
   const [selectedActivityId, setSelectedActivityId] = useState<number | null>(null);
+  const [activityMetadata, setActivityMetadata] = useState<ActivityMetadata>(
+    createActivityMetadata(),
+  );
   const [isLoadingActivities, setIsLoadingActivities] = useState(false);
   const [isImportingActivity, setIsImportingActivity] = useState(false);
   const searchParams = new URLSearchParams(window.location.search);
   const stravaStatus = searchParams.get('strava');
+  const selectedActivity = activities.find(
+    (activity) => activity.id === selectedActivityId,
+  );
+
+  useEffect(() => {
+    setActivityMetadata(createActivityMetadata(selectedActivity));
+  }, [selectedActivity]);
+
+  function handleMetadataChange(
+    event: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>,
+  ) {
+    const { name, value } = event.target;
+
+    setActivityMetadata((currentMetadata) => ({
+      ...currentMetadata,
+      [name]: value,
+    }));
+  }
+
+  function handleGenerateLoremIpsum() {
+    setActivityMetadata((currentMetadata) => ({
+      ...currentMetadata,
+      textDescription: createLoremIpsumDescription(),
+    }));
+  }
 
   async function handleLoadActivities() {
     setStatus('');
@@ -883,6 +1217,7 @@ function AddActivityPage({ session }: AddActivityPageProps) {
         {
           body: {
             activityId: selectedActivityId,
+            metadata: activityMetadata,
           },
         },
       );
@@ -1013,6 +1348,109 @@ function AddActivityPage({ session }: AddActivityPageProps) {
                   ))}
                 </div>
 
+                <div className="activity-metadata-form">
+                  <label>
+                    <span>Project path</span>
+                    <select
+                      name="pfpType"
+                      value={activityMetadata.pfpType}
+                      onChange={handleMetadataChange}
+                    >
+                      <option value="Voyager">Voyager</option>
+                      <option value="Far Point Trail">Far Point Trail</option>
+                    </select>
+                  </label>
+
+                  <label>
+                    <span>Trail name</span>
+                    <input
+                      name="trailName"
+                      value={activityMetadata.trailName}
+                      onChange={handleMetadataChange}
+                      placeholder="Optional"
+                    />
+                  </label>
+
+                  <label>
+                    <span>City</span>
+                    <input
+                      name="city"
+                      value={activityMetadata.city}
+                      onChange={handleMetadataChange}
+                    />
+                  </label>
+
+                  <label>
+                    <span>State</span>
+                    <input
+                      name="state"
+                      value={activityMetadata.state}
+                      onChange={handleMetadataChange}
+                    />
+                  </label>
+
+                  <label>
+                    <span>Province</span>
+                    <input
+                      name="province"
+                      value={activityMetadata.province}
+                      onChange={handleMetadataChange}
+                    />
+                  </label>
+
+                  <label>
+                    <span>Country</span>
+                    <input
+                      name="country"
+                      value={activityMetadata.country}
+                      onChange={handleMetadataChange}
+                    />
+                  </label>
+
+                  <label>
+                    <span>Corrected distance (km)</span>
+                    <input
+                      name="correctedDistance"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={activityMetadata.correctedDistance}
+                      onChange={handleMetadataChange}
+                    />
+                  </label>
+
+                  <label>
+                    <span>Distance made good (km)</span>
+                    <input
+                      name="distanceMadeGood"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={activityMetadata.distanceMadeGood}
+                      onChange={handleMetadataChange}
+                    />
+                  </label>
+
+                  <label className="activity-description-field">
+                    <span>Text description</span>
+                    <textarea
+                      name="textDescription"
+                      value={activityMetadata.textDescription}
+                      onChange={handleMetadataChange}
+                      rows={10}
+                      placeholder="Write the route notes, story, conditions, links, or other context here."
+                    />
+                  </label>
+
+                  <button
+                    className="activity-secondary-button activity-lorem-button"
+                    type="button"
+                    onClick={handleGenerateLoremIpsum}
+                  >
+                    Generate Lorem Ipsum
+                  </button>
+                </div>
+
                 <button
                   className="strava-connect-button"
                   type="button"
@@ -1039,8 +1477,114 @@ function AddActivityPage({ session }: AddActivityPageProps) {
   );
 }
 
+type ActivityStoryProps = {
+  activity: SelectedProjectActivity;
+  onBack: () => void;
+};
+
+function renderActivityParagraph(paragraph: string, paragraphIndex: number) {
+  const parts: ReactNode[] = [];
+  let textStart = 0;
+
+  for (const match of paragraph.matchAll(youtubeUrlPattern)) {
+    const rawMatch = match[0];
+    const matchIndex = match.index ?? 0;
+    const { url } = splitTrailingUrlPunctuation(rawMatch);
+    const embedUrl = getYouTubeEmbedUrl(url);
+
+    if (!embedUrl) {
+      continue;
+    }
+
+    if (matchIndex > textStart) {
+      parts.push(
+        <p key={`text-${paragraphIndex}-${textStart}`}>
+          {paragraph.slice(textStart, matchIndex)}
+        </p>,
+      );
+    }
+
+    parts.push(
+      <figure className="route-story-video" key={`video-${paragraphIndex}-${matchIndex}`}>
+        <iframe
+          src={embedUrl}
+          title="Activity video"
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+          allowFullScreen
+          loading="lazy"
+        />
+      </figure>,
+    );
+
+    textStart = matchIndex + url.length;
+  }
+
+  if (textStart < paragraph.length) {
+    parts.push(
+      <p key={`text-${paragraphIndex}-${textStart}`}>
+        {paragraph.slice(textStart)}
+      </p>,
+    );
+  }
+
+  return parts.length > 0
+    ? parts
+    : [<p key={`text-${paragraphIndex}`}>{paragraph}</p>];
+}
+
+function ActivityStory({ activity, onBack }: ActivityStoryProps) {
+  const description = activity.text_description?.trim();
+  const paragraphs = description
+    ? description.split(/\n{2,}/).map((paragraph) => paragraph.trim())
+    : ['No route description has been added yet.'];
+  const correctedDistance = formatKilometers(activity.corrected_distance);
+  const distanceMadeGood = formatKilometers(activity.distance_made_good);
+  const activityRouteClass =
+    activity.pfp_type === 'Far Point Trail'
+      ? 'journey-far-point'
+      : 'journey-voyager';
+
+  return (
+    <article className="route-story">
+      <p className={`eyebrow ${activityRouteClass}`}>
+        {activity.pfp_type ?? 'Project Far Point Route'}
+      </p>
+      <h2>{activity.trail_name || activity.name}</h2>
+      <div className="route-story-meta" aria-label="Route details">
+        <button
+          className="route-story-back"
+          type="button"
+          onClick={onBack}
+          aria-label="Back to Project Far Point"
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+            <path d="M3 10.8 12 3l9 7.8" />
+            <path d="M5.5 9.2V21h13V9.2" />
+            <path d="M9.5 21v-6.2h5V21" />
+          </svg>
+        </button>
+        {correctedDistance && <span>{correctedDistance}</span>}
+        {distanceMadeGood && <span>{distanceMadeGood} made good</span>}
+      </div>
+      <div className="route-story-copy">
+        {paragraphs.flatMap((paragraph, index) =>
+          renderActivityParagraph(paragraph, index),
+        )}
+      </div>
+    </article>
+  );
+}
+
 function App() {
   const session = useSupabaseSession();
+  const [selectedActivity, setSelectedActivity] =
+    useState<SelectedProjectActivity | null>(null);
+  const handleActivitySelect = useCallback((activity: SelectedProjectActivity) => {
+    setSelectedActivity(activity);
+  }, []);
+  const handleBackToIntro = useCallback(() => {
+    setSelectedActivity(null);
+  }, []);
   const searchParams = new URLSearchParams(window.location.search);
   const showAdminPage = searchParams.has('adminPage');
   const adminPage = searchParams.get('adminPage');
@@ -1078,56 +1622,66 @@ function App() {
         </header>
         <div className="intro-shell">
           <article className="intro">
-            <div className="welcome-copy">
-              <p>
-                Project Far Point is a geo-blog documenting my attempt to
-                travel a cumulative distance equal to the circumference of the
-                Earth: 40,076 kilometers. Over the course of a decade or more,
-                thousands of walks, backpacking trips, paddling adventures, ski
-                tours, and snowshoe excursions will become the real-world
-                building blocks of two imagined journeys that together circle the
-                globe: <strong className="journey-voyager">Voyager</strong> and
-                the <strong className="journey-far-point">Far Point Trail</strong>.
-              </p>
-              <p>
-                Voyager begins high in the remote Southern Alps of New Zealand and
-                travels, <i>in imagination</i>, 20,038 kilometers through Australia, Asia, over the summit of Mount Everest,
-                and through Europe to its destination: the Cathedral of St. James in
-                Santiago de Compostela, Spain - the famed terminus of the Camino
-                de Santiago and the exact opposite side of the Earth (antipode) of its starting point.
-              </p>
-              <p>
-                The reality behind Voyager is far less direct, but no less
-                meaningful. Every local walk, winter outing, river float, and day
-                hike contributes to the journey. With a focus on autumn, winter,
-                and spring adventures near my home in Calgary, Alberta, Voyager
-                will also chronicle travels to all fifty U.S. states, Canada's
-                thirteen provinces and territories, and walking explorations of
-                many of the world's great cities.
-              </p>
-              <p>
-                The second half of the project, the Far Point Trail, is Voyager's
-                wild twin. It imagines an oceanic return voyage from the cathedral in Santiago de Compostela back
-                to the Southern Alps of New Zealand. Supporting that fictional
-                route is a very real 20,038-kilometer wilderness journey linking
-                some of North America's most iconic long-distance trails,
-                including Canada's Great Divide Trail and Trans Canada Trail, the
-                Pacific Northwest Trail, the Continental Divide Trail, the Arizona
-                Trail, the Pacific Crest Trail, and the Oregon and California
-                coastal trails.
-              </p>
-              <p>
-                Together, Voyager and the Far Point Trail will one day complete a full virtual
-                circumnavigation of the Earth. Explore the map by clicking on the routes and markers to learn more about the journeys and follow along as the progress paths grow with each new adventure.
-                You will find photos, videos, and stories from the adventures, as well as reflections on the experience of connecting with the world through travel and imagination.
-              </p>
-              <p>
-                The destination may be years away, but the adventure begins with
-                the next step. I'm already planning a celebration in the courtyard
-                of St. James Cathedral in 2038! Until then, I invite you to follow
-                along and share in the journey.
-              </p>
-            </div>
+            {selectedActivity ? (
+              <ActivityStory
+                activity={selectedActivity}
+                onBack={handleBackToIntro}
+              />
+            ) : (
+              <div className="welcome-copy">
+                <p>
+                  Project Far Point is a geo-blog documenting my attempt to
+                  travel a cumulative distance equal to the circumference of the
+                  Earth: 40,076 kilometers. Over the course of a decade or more,
+                  thousands of walks, backpacking trips, paddling adventures,
+                  ski tours, and snowshoe excursions will become the real-world
+                  building blocks of two imagined journeys that together circle
+                  the globe: <strong className="journey-voyager">Voyager</strong>{' '}
+                  and the{' '}
+                  <strong className="journey-far-point">Far Point Trail</strong>.
+                  Those imagined routes pass through 32 countries that together
+                  are home to nearly 58% of the world's population.
+                </p>
+                <p>
+                  Voyager begins high in the remote Southern Alps of New Zealand and
+                  travels, <i>in imagination</i>, 20,038 kilometers through Australia, Asia, over the summit of Mount Everest,
+                  and through Europe to its destination: the Cathedral of St. James in
+                  Santiago de Compostela, Spain - the famed terminus of the Camino
+                  de Santiago and the exact opposite side of the Earth (antipode) of its starting point.
+                </p>
+                <p>
+                  The reality behind Voyager is far less direct, but no less
+                  meaningful. Every local walk, winter outing, river float, and day
+                  hike contributes to the journey. With a focus on autumn, winter,
+                  and spring adventures near my home in Calgary, Alberta, Voyager
+                  will also chronicle travels to all fifty U.S. states, Canada's
+                  thirteen provinces and territories, and walking explorations of
+                  many of the world's great cities.
+                </p>
+                <p>
+                  The second half of the project, the Far Point Trail, is Voyager's
+                  wild twin. It imagines an oceanic return voyage from the cathedral in Santiago de Compostela back
+                  to the Southern Alps of New Zealand. Supporting that fictional
+                  route is a very real 20,038-kilometer wilderness journey linking
+                  some of North America's most iconic long-distance trails,
+                  including Canada's Great Divide Trail and Trans Canada Trail, the
+                  Pacific Northwest Trail, the Continental Divide Trail, the Arizona
+                  Trail, the Pacific Crest Trail, and the Oregon and California
+                  coastal trails.
+                </p>
+                <p>
+                  Together, Voyager and the Far Point Trail will one day complete a full virtual
+                  circumnavigation of the Earth. Explore the map by clicking on the routes and markers to learn more about the journeys and follow along as the progress paths grow with each new adventure.
+                  You will find photos, videos, and stories from the adventures, as well as reflections on the experience of connecting with the world through travel and imagination.
+                </p>
+                <p>
+                  The destination may be years away, but the adventure begins with
+                  the next step. I'm already planning a celebration in the courtyard
+                  of St. James Cathedral in 2038! Until then, I invite you to follow
+                  along and share in the journey.
+                </p>
+              </div>
+            )}
           </article>
           <aside className="journey-summary" aria-label="Project route summary">
             <div className="summary-item summary-voyager">
@@ -1161,7 +1715,10 @@ function App() {
         </div>
       </section>
       <section className="globe-panel" aria-label="Interactive 3D globe">
-        <GlobeView />
+        <GlobeView
+          selectedActivityId={selectedActivity?.id ?? null}
+          onActivitySelect={handleActivitySelect}
+        />
       </section>
     </main>
   );
