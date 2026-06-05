@@ -1577,10 +1577,19 @@ function ActivityStory({ activity, onBack }: ActivityStoryProps) {
 
 function App() {
   const session = useSupabaseSession();
+  const storyPanelRef = useRef<HTMLElement | null>(null);
   const [selectedActivity, setSelectedActivity] =
     useState<SelectedProjectActivity | null>(null);
   const handleActivitySelect = useCallback((activity: SelectedProjectActivity) => {
     setSelectedActivity(activity);
+    window.requestAnimationFrame(() => {
+      if (window.matchMedia('(max-width: 980px)').matches) {
+        storyPanelRef.current?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'start',
+        });
+      }
+    });
   }, []);
   const handleBackToIntro = useCallback(() => {
     setSelectedActivity(null);
@@ -1603,7 +1612,11 @@ function App() {
 
   return (
     <main className="welcome-page">
-      <section className="welcome-copy-panel" aria-labelledby="welcome-title">
+      <section
+        className="welcome-copy-panel"
+        ref={storyPanelRef}
+        aria-labelledby="welcome-title"
+      >
         <header className="brand-header">
           <div className="brand-heading">
             <div className="brand-mark">
@@ -1620,69 +1633,71 @@ function App() {
           </div>
           <AuthPanel session={session} />
         </header>
-        <div className="intro-shell">
-          <article className="intro">
-            {selectedActivity ? (
-              <ActivityStory
-                activity={selectedActivity}
-                onBack={handleBackToIntro}
-              />
-            ) : (
-              <div className="welcome-copy">
-                <p>
-                  Project Far Point is a geo-blog documenting my attempt to
-                  travel a cumulative distance equal to the circumference of the
-                  Earth: 40,076 kilometers. Over the course of a decade or more,
-                  thousands of walks, backpacking trips, paddling adventures,
-                  ski tours, and snowshoe excursions will become the real-world
-                  building blocks of two imagined journeys that together circle
-                  the globe: <strong className="journey-voyager">Voyager</strong>{' '}
-                  and the{' '}
-                  <strong className="journey-far-point">Far Point Trail</strong>.
-                  Those imagined routes pass through 32 countries that together
-                  are home to nearly 58% of the world's population.
-                </p>
-                <p>
-                  Voyager begins high in the remote Southern Alps of New Zealand and
-                  travels, <i>in imagination</i>, 20,038 kilometers through Australia, Asia, over the summit of Mount Everest,
-                  and through Europe to its destination: the Cathedral of St. James in
-                  Santiago de Compostela, Spain - the famed terminus of the Camino
-                  de Santiago and the exact opposite side of the Earth (antipode) of its starting point.
-                </p>
-                <p>
-                  The reality behind Voyager is far less direct, but no less
-                  meaningful. Every local walk, winter outing, river float, and day
-                  hike contributes to the journey. With a focus on autumn, winter,
-                  and spring adventures near my home in Calgary, Alberta, Voyager
-                  will also chronicle travels to all fifty U.S. states, Canada's
-                  thirteen provinces and territories, and walking explorations of
-                  many of the world's great cities.
-                </p>
-                <p>
-                  The second half of the project, the Far Point Trail, is Voyager's
-                  wild twin. It imagines an oceanic return voyage from the cathedral in Santiago de Compostela back
-                  to the Southern Alps of New Zealand. Supporting that fictional
-                  route is a very real 20,038-kilometer wilderness journey linking
-                  some of North America's most iconic long-distance trails,
-                  including Canada's Great Divide Trail and Trans Canada Trail, the
-                  Pacific Northwest Trail, the Continental Divide Trail, the Arizona
-                  Trail, the Pacific Crest Trail, and the Oregon and California
-                  coastal trails.
-                </p>
-                <p>
-                  Together, Voyager and the Far Point Trail will one day complete a full virtual
-                  circumnavigation of the Earth. Explore the map by clicking on the routes and markers to learn more about the journeys and follow along as the progress paths grow with each new adventure.
-                  You will find photos, videos, and stories from the adventures, as well as reflections on the experience of connecting with the world through travel and imagination.
-                </p>
-                <p>
-                  The destination may be years away, but the adventure begins with
-                  the next step. I'm already planning a celebration in the courtyard
-                  of St. James Cathedral in 2038! Until then, I invite you to follow
-                  along and share in the journey.
-                </p>
-              </div>
-            )}
-          </article>
+        <article className="intro">
+          {selectedActivity ? (
+            <ActivityStory
+              activity={selectedActivity}
+              onBack={handleBackToIntro}
+            />
+          ) : (
+            <div className="welcome-copy">
+              <p>
+                Project Far Point is a geo-blog documenting my attempt to
+                travel a cumulative distance equal to the circumference of the
+                Earth: 40,076 kilometers. Over the course of a decade or more,
+                thousands of walks, backpacking trips, paddling adventures,
+                ski tours, and snowshoe excursions will become the real-world
+                building blocks of two imagined journeys that together circle
+                the globe: <strong className="journey-voyager">Voyager</strong>{' '}
+                and the{' '}
+                <strong className="journey-far-point">Far Point Trail</strong>.
+                Those imagined routes pass through 32 countries that together
+                are home to nearly 58% of the world's population.
+              </p>
+              <p>
+                Voyager begins high in the remote Southern Alps of New Zealand and
+                travels, <i>in imagination</i>, 20,038 kilometers through Australia, Asia, over the summit of Mount Everest,
+                and through Europe to its destination: the Cathedral of St. James in
+                Santiago de Compostela, Spain - the famed terminus of the Camino
+                de Santiago and the exact opposite side of the Earth (antipode) of its starting point.
+              </p>
+              <p>
+                The reality behind Voyager is far less direct, but no less
+                meaningful. Every local walk, winter outing, river float, and day
+                hike contributes to the journey. With a focus on autumn, winter,
+                and spring adventures near my home in Calgary, Alberta, Voyager
+                will also chronicle travels to all fifty U.S. states, Canada's
+                thirteen provinces and territories, and walking explorations of
+                many of the world's great cities.
+              </p>
+              <p>
+                The second half of the project, the Far Point Trail, is Voyager's
+                wild twin. It imagines an oceanic return voyage from the cathedral in Santiago de Compostela back
+                to the Southern Alps of New Zealand. Supporting that fictional
+                route is a very real 20,038-kilometer wilderness journey linking
+                some of North America's most iconic long-distance trails,
+                including Canada's Great Divide Trail and Trans Canada Trail, the
+                Pacific Northwest Trail, the Continental Divide Trail, the Arizona
+                Trail, the Pacific Crest Trail, and the Oregon and California
+                coastal trails.
+              </p>
+              <p>
+                Together, Voyager and the Far Point Trail will one day complete a full virtual
+                circumnavigation of the Earth. Explore the map by clicking on the routes and markers to learn more about the journeys and follow along as the progress paths grow with each new adventure.
+                You will find photos, videos, and stories from the adventures, as well as reflections on the experience of connecting with the world through travel and imagination.
+              </p>
+              <p>
+                The destination may be years away, but the adventure begins with
+                the next step. I'm already planning a celebration in the courtyard
+                of St. James Cathedral in 2038! Until then, I invite you to follow
+                along and share in the journey.
+              </p>
+            </div>
+          )}
+        </article>
+      </section>
+      <section className="experience-panel" aria-label="Project progress and map">
+        <div className="experience-top">
           <aside className="journey-summary" aria-label="Project route summary">
             <div className="summary-item summary-voyager">
               <span className="summary-kicker journey-voyager">Voyager</span>
@@ -1712,13 +1727,27 @@ function App() {
               <span className="route-dot route-dot-end" />
             </div>
           </aside>
+          <aside className="charity-panel" aria-label="Charity donations">
+            <p className="charity-kicker">Future fundraiser</p>
+            <p className="charity-copy">
+              Members will be able to support trail stewardship through a partner
+              charity, likely the Great Divide Trail Association.
+            </p>
+            <div className="charity-stats" aria-label="Donation impact">
+              <span><strong>0</strong> members</span>
+              <span><strong>$0</strong> donated</span>
+            </div>
+            <a className="donate-link" href="#donate" aria-disabled="true">
+              Donate
+            </a>
+          </aside>
         </div>
-      </section>
-      <section className="globe-panel" aria-label="Interactive 3D globe">
-        <GlobeView
-          selectedActivityId={selectedActivity?.id ?? null}
-          onActivitySelect={handleActivitySelect}
-        />
+        <div className="globe-panel" aria-label="Interactive 3D globe">
+          <GlobeView
+            selectedActivityId={selectedActivity?.id ?? null}
+            onActivitySelect={handleActivitySelect}
+          />
+        </div>
       </section>
     </main>
   );
