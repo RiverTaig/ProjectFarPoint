@@ -1,5 +1,5 @@
 import { StrictMode, useCallback, useEffect, useRef, useState } from 'react';
-import type { ChangeEvent, FormEvent, ReactNode } from 'react';
+import type { CSSProperties, ChangeEvent, FormEvent, ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import '@arcgis/core/assets/esri/themes/dark/main.css';
 import Camera from '@arcgis/core/Camera.js';
@@ -333,6 +333,8 @@ function formatKilometers(value: number | null) {
 
 const youtubeUrlPattern = /https?:\/\/(?:www\.|m\.)?(?:youtube\.com|youtu\.be)\/[^\s<>"']+/gi;
 const trailingUrlPunctuationPattern = /[),.;:!?]+$/;
+const mobileMapControlMinX = 6;
+const mobileMapControlMaxX = 94;
 
 function parseYouTubeStartSeconds(startTime: string) {
   if (/^\d+$/.test(startTime)) {
@@ -404,6 +406,12 @@ function splitTrailingUrlPunctuation(url: string) {
     url: punctuation ? url.slice(0, -punctuation.length) : url,
     punctuation,
   };
+}
+
+function setBasemapLabelsVisible(map: Map, isVisible: boolean) {
+  map.basemap?.referenceLayers?.forEach((layer) => {
+    layer.visible = isVisible;
+  });
 }
 
 async function playOpeningGlobeAnimation(view: SceneView) {
@@ -764,8 +772,12 @@ function GlobeView({ selectedActivityId, onActivitySelect }: GlobeViewProps) {
         atmosphereEnabled: true,
       },
       ui: {
-        components: ['zoom', 'navigation-toggle', 'compass'],
+        components: ['compass'],
       },
+    });
+    setBasemapLabelsVisible(map, (view.zoom ?? 0) < 12);
+    const zoomHandle = view.watch('zoom', (zoom) => {
+      setBasemapLabelsVisible(map, zoom < 12);
     });
     view.when(() => {
       if (isDestroyed) {
@@ -822,6 +834,7 @@ function GlobeView({ selectedActivityId, onActivitySelect }: GlobeViewProps) {
       importedActivityGraphics.current.clear();
       selectedActivityGraphic.current = null;
       clickHandle.remove();
+      zoomHandle.remove();
       view.destroy();
     };
   }, [onActivitySelect]);
@@ -1482,6 +1495,8 @@ type ActivityStoryProps = {
   onBack: () => void;
 };
 
+type MobileMode = 'project' | 'progress' | 'search' | 'donate';
+
 function renderActivityParagraph(paragraph: string, paragraphIndex: number) {
   const parts: ReactNode[] = [];
   let textStart = 0;
@@ -1575,13 +1590,137 @@ function ActivityStory({ activity, onBack }: ActivityStoryProps) {
   );
 }
 
+function JourneySummary() {
+  return (
+    <aside className="journey-summary" aria-label="Project route summary">
+      <div className="summary-item summary-voyager">
+        <span className="summary-kicker journey-voyager">Voyager</span>
+        <span className="summary-label">New Zealand to Santiago de Compostela</span>
+        <span className="summary-progress-text">
+          <strong>1,000 km</strong> of 20,038 km completed <strong>(5%)</strong>
+        </span>
+        <span className="summary-progress" aria-hidden="true">
+          <span className="summary-progress-fill summary-progress-voyager" />
+        </span>
+      </div>
+      <div className="summary-item summary-far-point">
+        <span className="summary-kicker journey-far-point">Far Point Trail</span>
+        <span className="summary-label">Santiago de Compostela to New Zealand</span>
+        <span className="summary-progress-text">
+          <strong>1,000 km</strong> of 20,038 km completed <strong>(5%)</strong>
+        </span>
+        <span className="summary-progress" aria-hidden="true">
+          <span className="summary-progress-fill summary-progress-far-point" />
+        </span>
+      </div>
+      <div className="summary-route">
+        <span className="route-dot route-dot-start" />
+        <span className="route-line route-line-voyager" />
+        <span className="route-dot route-dot-middle" />
+        <span className="route-line route-line-far-point" />
+        <span className="route-dot route-dot-end" />
+      </div>
+    </aside>
+  );
+}
+
+function CharityPanel() {
+  return (
+    <aside className="charity-panel" aria-label="Charity donations">
+      <p className="charity-kicker">Future fundraiser</p>
+      <p className="charity-copy">
+        Members will be able to support trail stewardship through a partner
+        charity, likely the Great Divide Trail Association.
+      </p>
+      <div className="charity-stats" aria-label="Donation impact">
+        <span><strong>0</strong> members</span>
+        <span><strong>$0</strong> donated</span>
+      </div>
+      <a className="donate-link" href="#donate" aria-disabled="true">
+        Donate
+      </a>
+    </aside>
+  );
+}
+
+function SearchPanel() {
+  return (
+    <section className="search-panel" aria-label="Search">
+      <p className="eyebrow">Search</p>
+      <h2>Search coming soon</h2>
+    </section>
+  );
+}
+
 function App() {
   const session = useSupabaseSession();
   const storyPanelRef = useRef<HTMLElement | null>(null);
+  const isDraggingMapControl = useRef(false);
   const [selectedActivity, setSelectedActivity] =
     useState<SelectedProjectActivity | null>(null);
+  const [mobileMode, setMobileMode] = useState<MobileMode>('project');
+  const [mobileMapHeight, setMobileMapHeight] = useState(48);
+  const [mobileMapControlX, setMobileMapControlX] = useState(94);
+  const [mobileMapOpacity, setMobileMapOpacity] = useState(1);
+
+  const updateMobileMapFromPointer = useCallback((clientX: number, clientY: number) => {
+    const viewportWidth = Math.max(window.innerWidth, 1);
+    const viewportHeight = Math.max(window.innerHeight, 1);
+    const nextControlX = Math.min(
+      mobileMapControlMaxX,
+      Math.max(mobileMapControlMinX, (clientX / viewportWidth) * 100),
+    );
+    const nextHeight = Math.min(
+      76,
+      Math.max(28, ((viewportHeight - clientY) / viewportHeight) * 100),
+    );
+    const opacityProgress =
+      (nextControlX - mobileMapControlMinX) /
+      (mobileMapControlMaxX - mobileMapControlMinX);
+    const nextOpacity = 0.25 + opacityProgress * 0.75;
+
+    setMobileMapHeight(nextHeight);
+    setMobileMapControlX(nextControlX);
+    setMobileMapOpacity(nextOpacity);
+  }, []);
+
+  function handleMobileMapControlPointerDown(event: React.PointerEvent<HTMLButtonElement>) {
+    isDraggingMapControl.current = true;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    updateMobileMapFromPointer(event.clientX, event.clientY);
+  }
+
+  function handleMobileMapControlPointerMove(event: React.PointerEvent<HTMLButtonElement>) {
+    if (!isDraggingMapControl.current) {
+      return;
+    }
+
+    updateMobileMapFromPointer(event.clientX, event.clientY);
+  }
+
+  function handleMobileMapControlPointerUp(event: React.PointerEvent<HTMLButtonElement>) {
+    isDraggingMapControl.current = false;
+
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }
+
+  const handleMobileModeChange = useCallback((nextMode: MobileMode) => {
+    setMobileMode(nextMode);
+    window.requestAnimationFrame(() => {
+      if (window.matchMedia('(max-width: 980px)').matches) {
+        window.scrollTo({
+          top: 0,
+          behavior: 'smooth',
+        });
+      }
+    });
+  }, []);
+
   const handleActivitySelect = useCallback((activity: SelectedProjectActivity) => {
     setSelectedActivity(activity);
+    setMobileMode('project');
     window.requestAnimationFrame(() => {
       if (window.matchMedia('(max-width: 980px)').matches) {
         storyPanelRef.current?.scrollIntoView({
@@ -1594,6 +1733,11 @@ function App() {
   const handleBackToIntro = useCallback(() => {
     setSelectedActivity(null);
   }, []);
+  const appStyle = {
+    '--mobile-map-height': mobileMapHeight,
+    '--mobile-map-control-x': mobileMapControlX,
+    '--mobile-map-opacity': mobileMapOpacity,
+  } as CSSProperties;
   const searchParams = new URLSearchParams(window.location.search);
   const showAdminPage = searchParams.has('adminPage');
   const adminPage = searchParams.get('adminPage');
@@ -1611,7 +1755,58 @@ function App() {
   }
 
   return (
-    <main className="welcome-page">
+    <main
+      className={`welcome-page mobile-mode-${mobileMode}`}
+      style={appStyle}
+    >
+      <div className="mobile-shell-header">
+        <div className="mobile-brand-heading">
+          <div className="brand-mark">
+            <img
+              className="brand-art"
+              src={`${import.meta.env.BASE_URL}ProjectFarPoint.png`}
+              alt="Project FarPoint logo with planet Earth in space"
+            />
+          </div>
+          <div className="brand-title">
+            <p className="eyebrow">Welcome to Project Far Point</p>
+            <p className="mobile-brand-title">Project Far Point</p>
+          </div>
+        </div>
+        <div className="mobile-nav-account">
+          <AuthPanel session={session} />
+        <button
+          className={mobileMode === 'donate' ? 'mobile-mode-active' : ''}
+          type="button"
+          onClick={() => handleMobileModeChange('donate')}
+        >
+          Donate
+        </button>
+        </div>
+      </div>
+      <nav className="mobile-mode-nav" aria-label="Mobile view">
+        <button
+          className={mobileMode === 'project' ? 'mobile-mode-active' : ''}
+          type="button"
+          onClick={() => handleMobileModeChange('project')}
+        >
+          Project Far Point
+        </button>
+        <button
+          className={mobileMode === 'progress' ? 'mobile-mode-active' : ''}
+          type="button"
+          onClick={() => handleMobileModeChange('progress')}
+        >
+          Progress
+        </button>
+        <button
+          className={mobileMode === 'search' ? 'mobile-mode-active' : ''}
+          type="button"
+          onClick={() => handleMobileModeChange('search')}
+        >
+          Search
+        </button>
+      </nav>
       <section
         className="welcome-copy-panel"
         ref={storyPanelRef}
@@ -1695,54 +1890,31 @@ function App() {
             </div>
           )}
         </article>
+        <div className="mobile-mode-content mobile-progress-content">
+          <JourneySummary />
+        </div>
+        <div className="mobile-mode-content mobile-donate-content">
+          <CharityPanel />
+        </div>
+        <div className="mobile-mode-content mobile-search-content">
+          <SearchPanel />
+        </div>
       </section>
       <section className="experience-panel" aria-label="Project progress and map">
         <div className="experience-top">
-          <aside className="journey-summary" aria-label="Project route summary">
-            <div className="summary-item summary-voyager">
-              <span className="summary-kicker journey-voyager">Voyager</span>
-              <span className="summary-label">New Zealand to Santiago de Compostela</span>
-              <span className="summary-progress-text">
-                <strong>1,000 km</strong> of 20,038 km completed <strong>(5%)</strong>
-              </span>
-              <span className="summary-progress" aria-hidden="true">
-                <span className="summary-progress-fill summary-progress-voyager" />
-              </span>
-            </div>
-            <div className="summary-item summary-far-point">
-              <span className="summary-kicker journey-far-point">Far Point Trail</span>
-              <span className="summary-label">Santiago de Compostela to New Zealand</span>
-              <span className="summary-progress-text">
-                <strong>1,000 km</strong> of 20,038 km completed <strong>(5%)</strong>
-              </span>
-              <span className="summary-progress" aria-hidden="true">
-                <span className="summary-progress-fill summary-progress-far-point" />
-              </span>
-            </div>
-            <div className="summary-route">
-              <span className="route-dot route-dot-start" />
-              <span className="route-line route-line-voyager" />
-              <span className="route-dot route-dot-middle" />
-              <span className="route-line route-line-far-point" />
-              <span className="route-dot route-dot-end" />
-            </div>
-          </aside>
-          <aside className="charity-panel" aria-label="Charity donations">
-            <p className="charity-kicker">Future fundraiser</p>
-            <p className="charity-copy">
-              Members will be able to support trail stewardship through a partner
-              charity, likely the Great Divide Trail Association.
-            </p>
-            <div className="charity-stats" aria-label="Donation impact">
-              <span><strong>0</strong> members</span>
-              <span><strong>$0</strong> donated</span>
-            </div>
-            <a className="donate-link" href="#donate" aria-disabled="true">
-              Donate
-            </a>
-          </aside>
+          <JourneySummary />
+          <CharityPanel />
         </div>
         <div className="globe-panel" aria-label="Interactive 3D globe">
+          <button
+            className="mobile-map-control"
+            type="button"
+            aria-label="Drag to resize and fade the map"
+            onPointerDown={handleMobileMapControlPointerDown}
+            onPointerMove={handleMobileMapControlPointerMove}
+            onPointerUp={handleMobileMapControlPointerUp}
+            onPointerCancel={handleMobileMapControlPointerUp}
+          />
           <GlobeView
             selectedActivityId={selectedActivity?.id ?? null}
             onActivitySelect={handleActivitySelect}

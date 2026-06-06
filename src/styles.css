@@ -51,6 +51,13 @@ body {
   min-height: 100vh;
 }
 
+.mobile-shell-header,
+.mobile-mode-nav,
+.mobile-mode-content,
+.mobile-map-control {
+  display: none;
+}
+
 .welcome-copy-panel {
   position: relative;
   z-index: 2;
@@ -859,6 +866,23 @@ h1 {
   color: #fffef8;
 }
 
+.search-panel {
+  display: grid;
+  gap: 12px;
+  padding: clamp(16px, 4vw, 24px);
+  color: #f1eadb;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(155, 228, 255, 0.12);
+  border-radius: 8px;
+}
+
+.search-panel h2 {
+  margin: 0;
+  color: #fffef8;
+  font-size: clamp(1.45rem, 7vw, 2.1rem);
+  line-height: 1.08;
+}
+
 .donate-link {
   justify-self: start;
   display: inline-flex;
@@ -981,16 +1005,159 @@ h1 {
     min-height: 100%;
   }
 
+  body {
+    background: #020611;
+  }
+
   .welcome-page {
-    grid-template-columns: 1fr;
+    display: block;
     min-height: 100svh;
+    padding-top: clamp(150px, 27vw, 184px);
+  }
+
+  .mobile-shell-header {
+    position: fixed;
+    z-index: 40;
+    top: 0;
+    right: 0;
+    left: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+    min-height: clamp(106px, 20vw, 132px);
+    padding: 10px clamp(12px, 3.4vw, 24px);
+    background: #000;
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.38);
+  }
+
+  .mobile-brand-heading {
+    display: flex;
+    gap: clamp(12px, 3.4vw, 20px);
+    align-items: center;
+    min-width: 0;
+  }
+
+  .mobile-brand-heading .brand-mark {
+    width: clamp(82px, 20vw, 118px);
+  }
+
+  .mobile-brand-heading .eyebrow {
+    display: none;
+  }
+
+  .mobile-brand-title {
+    margin: 0;
+    color: #fffef8;
+    font-size: clamp(1.25rem, 5.6vw, 2rem);
+    font-weight: 850;
+    line-height: 1.02;
+    white-space: nowrap;
+  }
+
+  .mobile-mode-nav {
+    position: fixed;
+    z-index: 41;
+    top: clamp(106px, 20vw, 132px);
+    right: 0;
+    left: 0;
+    display: grid;
+    grid-template-columns: repeat(3, max-content);
+    gap: clamp(22px, 8vw, 58px);
+    align-items: center;
+    min-height: 44px;
+    padding: 0 clamp(18px, 5vw, 40px);
+    background: #000;
+    border-bottom: 1px solid rgba(79, 180, 255, 0.42);
+  }
+
+  .mobile-mode-nav::after {
+    position: absolute;
+    right: 0;
+    bottom: -1px;
+    left: 0;
+    height: 4px;
+    content: "";
+    background: rgba(241, 234, 219, 0.28);
+  }
+
+  .mobile-mode-nav button,
+  .mobile-nav-account button {
+    min-width: 0;
+    padding: 0;
+    color: rgba(241, 234, 219, 0.86);
+    font: inherit;
+    font-size: clamp(0.86rem, 3.5vw, 1rem);
+    font-weight: 620;
+    text-align: left;
+    cursor: pointer;
+    background: transparent;
+    border: 0;
+  }
+
+  .mobile-mode-nav .mobile-mode-active,
+  .mobile-nav-account .mobile-mode-active {
+    color: #ffb000;
+  }
+
+  .mobile-nav-account button {
+    justify-self: end;
+    color: #4fb4ff;
+    font-size: clamp(0.78rem, 3vw, 0.92rem);
+    font-weight: 760;
+    padding-right: 8px;
+    text-align: right;
+  }
+
+  .mobile-nav-account {
+    display: grid;
+    gap: 8px;
+    justify-items: end;
+    min-width: 0;
+    align-self: start;
+    padding-top: 10px;
+  }
+
+  .mobile-nav-account .auth-panel {
+    display: block;
+    justify-self: end;
+    margin: 0;
+  }
+
+  .mobile-nav-account .auth-row {
+    justify-content: end;
+    gap: 4px;
+  }
+
+  .mobile-nav-account .auth-toggle {
+    min-height: 22px;
+    max-width: min(172px, 36vw);
+    padding: 4px 8px;
+    overflow: hidden;
+    font-size: 0.52rem;
+    line-height: 1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-nav-account .auth-popover {
+    position: fixed;
+    top: clamp(126px, 24vw, 152px);
+    right: 12px;
+    left: 12px;
+    width: auto;
+    margin: 0;
   }
 
   .welcome-copy-panel {
+    display: block;
+    min-height: 100svh;
     height: auto;
-    min-height: auto;
     overflow: visible;
-    padding: 28px clamp(18px, 5vw, 48px) 52px;
+    padding:
+      18px
+      clamp(18px, 5vw, 48px)
+      max(82svh, 620px);
     box-shadow: none;
   }
 
@@ -999,17 +1166,18 @@ h1 {
   }
 
   .brand-header {
-    display: block;
+    display: none;
     width: min(100%, 720px);
     margin: 0 auto;
   }
 
-  .auth-panel {
+  .brand-header > .auth-panel {
+    display: none;
     justify-self: auto;
     margin: 0 0 clamp(18px, 2.6vw, 28px);
   }
 
-  .auth-popover {
+  .brand-header > .auth-panel .auth-popover {
     position: static;
     width: 100%;
     margin-top: 12px;
@@ -1023,19 +1191,42 @@ h1 {
     padding-right: 0;
   }
 
+  .mobile-mode-content {
+    width: min(100%, 720px);
+    margin: 0 auto;
+  }
+
+  .mobile-mode-project .intro,
+  .mobile-mode-progress .mobile-progress-content,
+  .mobile-mode-donate .mobile-donate-content,
+  .mobile-mode-search .mobile-search-content {
+    display: block;
+  }
+
+  .mobile-mode-progress .intro,
+  .mobile-mode-donate .intro,
+  .mobile-mode-search .intro,
+  .mobile-mode-project .mobile-mode-content,
+  .mobile-mode-progress .mobile-donate-content,
+  .mobile-mode-progress .mobile-search-content,
+  .mobile-mode-donate .mobile-progress-content,
+  .mobile-mode-donate .mobile-search-content,
+  .mobile-mode-search .mobile-progress-content,
+  .mobile-mode-search .mobile-donate-content {
+    display: none;
+  }
+
   .experience-panel {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    height: auto;
-    min-height: 66svh;
+    position: static;
+    display: block;
+    height: 0;
+    min-height: 0;
     overflow: visible;
+    background: transparent;
   }
 
   .experience-top {
-    order: 2;
-    grid-template-columns: 1fr;
-    padding: 18px clamp(18px, 5vw, 48px) 26px;
+    display: none;
   }
 
   .journey-summary {
@@ -1044,9 +1235,65 @@ h1 {
   }
 
   .globe-panel {
-    order: 1;
-    height: 56svh;
-    min-height: 360px;
+    position: fixed;
+    z-index: 25;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    height: calc(var(--mobile-map-height) * 1svh);
+    min-height: 220px;
+    overflow: visible;
+    border-top: 2px solid rgba(79, 180, 255, 0.58);
+    box-shadow: 0 -18px 42px rgba(0, 0, 0, 0.4);
+  }
+
+  .globe-panel .globe-view {
+    opacity: var(--mobile-map-opacity);
+    transition: opacity 90ms linear;
+  }
+
+  .mobile-map-control {
+    position: absolute;
+    z-index: 3;
+    top: -34px;
+    left: calc(var(--mobile-map-control-x) * 1%);
+    display: block;
+    width: 30px;
+    height: 52px;
+    transform: translateX(-50%);
+    touch-action: none;
+    cursor: grab;
+    background:
+      linear-gradient(135deg, rgba(166, 224, 49, 0.22), rgba(143, 188, 59, 0.36)),
+      rgba(143, 188, 59, 0.5);
+    border: 2px solid rgba(143, 188, 59, 0.74);
+    border-radius: 8px;
+    box-shadow:
+      0 0 24px rgba(143, 188, 59, 0.24),
+      0 12px 26px rgba(0, 0, 0, 0.34);
+  }
+
+  .mobile-map-control:active {
+    cursor: grabbing;
+  }
+
+  .mobile-map-control::before,
+  .mobile-map-control::after {
+    position: absolute;
+    right: 7px;
+    left: 7px;
+    height: 2px;
+    content: "";
+    background: rgba(225, 255, 171, 0.52);
+    border-radius: 999px;
+  }
+
+  .mobile-map-control::before {
+    top: 19px;
+  }
+
+  .mobile-map-control::after {
+    top: 28px;
   }
 
   .brand-mark {
@@ -1055,21 +1302,38 @@ h1 {
 }
 
 @media (max-width: 560px) {
-  .globe-panel {
-    height: 58svh;
-    min-height: 320px;
+  .welcome-page {
+    padding-top: clamp(136px, 33vw, 164px);
   }
 
-  .brand-heading {
-    gap: 16px;
+  .mobile-shell-header {
+    min-height: clamp(94px, 24vw, 120px);
+    padding-right: 10px;
+    padding-left: 10px;
   }
 
-  .brand-mark {
-    width: 112px;
+  .mobile-brand-heading {
+    gap: 10px;
   }
 
-  h1 {
-    font-size: clamp(1.55rem, 8vw, 2rem);
+  .mobile-brand-heading .brand-mark {
+    width: clamp(76px, 20vw, 96px);
+  }
+
+  .mobile-brand-title {
+    font-size: clamp(1.22rem, 5.6vw, 1.8rem);
+  }
+
+  .mobile-nav-account .auth-toggle {
+    max-width: min(154px, 38vw);
+  }
+
+  .mobile-mode-nav {
+    top: clamp(94px, 24vw, 120px);
+    gap: clamp(22px, 9vw, 42px);
+    min-height: 42px;
+    padding-right: 18px;
+    padding-left: 18px;
   }
 
   .journey-summary {
@@ -1096,5 +1360,9 @@ h1 {
 
   .charity-copy {
     font-size: 0.94rem;
+  }
+
+  .route-story h2 {
+    font-size: clamp(1.55rem, 7vw, 2rem);
   }
 }
