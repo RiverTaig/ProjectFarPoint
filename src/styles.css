@@ -562,6 +562,34 @@ h1 {
   color: #f1eadb;
 }
 
+.route-story-arriving .eyebrow,
+.route-story-arriving h2 {
+  animation: route-story-arrive 760ms ease-out both;
+}
+
+.route-story-arriving h2 {
+  animation-delay: 80ms;
+}
+
+@keyframes route-story-arrive {
+  0% {
+    opacity: 0;
+    transform: translateY(10px);
+    text-shadow: 0 0 0 rgba(79, 180, 255, 0);
+  }
+
+  45% {
+    opacity: 1;
+    text-shadow: 0 0 26px rgba(79, 180, 255, 0.32);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+    text-shadow: none;
+  }
+}
+
 .route-story-back {
   display: inline-grid;
   flex: 0 0 auto;
@@ -1273,6 +1301,63 @@ h1 {
       0 12px 26px rgba(0, 0, 0, 0.34);
   }
 
+  .mobile-map-control-with-hint {
+    animation: mobile-map-control-pulse 1400ms ease-out 2;
+  }
+
+  .mobile-map-control span {
+    position: absolute;
+    right: calc(100% + 8px);
+    top: 50%;
+    width: max-content;
+    max-width: 74px;
+    padding: 4px 7px;
+    color: rgba(241, 234, 219, 0.9);
+    font-size: 0.64rem;
+    font-weight: 800;
+    line-height: 1;
+    pointer-events: none;
+    background: rgba(2, 6, 17, 0.82);
+    border: 1px solid rgba(143, 188, 59, 0.3);
+    border-radius: 999px;
+    opacity: 0;
+    transform: translateY(-50%);
+  }
+
+  .mobile-map-control-with-hint span {
+    animation: mobile-map-control-hint 2600ms ease-out forwards;
+  }
+
+  @keyframes mobile-map-control-pulse {
+    0% {
+      box-shadow:
+        0 0 0 0 rgba(143, 188, 59, 0.48),
+        0 12px 26px rgba(0, 0, 0, 0.34);
+    }
+
+    100% {
+      box-shadow:
+        0 0 0 16px rgba(143, 188, 59, 0),
+        0 12px 26px rgba(0, 0, 0, 0.34);
+    }
+  }
+
+  @keyframes mobile-map-control-hint {
+    0%,
+    78% {
+      opacity: 0;
+    }
+
+    16%,
+    64% {
+      opacity: 1;
+    }
+
+    100% {
+      opacity: 0;
+    }
+  }
+
   .mobile-map-control:active {
     cursor: grabbing;
   }
@@ -1294,6 +1379,15 @@ h1 {
 
   .mobile-map-control::after {
     top: 28px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .mobile-map-control-with-hint,
+    .mobile-map-control-with-hint span,
+    .route-story-arriving .eyebrow,
+    .route-story-arriving h2 {
+      animation: none;
+    }
   }
 
   .brand-mark {

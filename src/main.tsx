@@ -335,6 +335,18 @@ const youtubeUrlPattern = /https?:\/\/(?:www\.|m\.)?(?:youtube\.com|youtu\.be)\/
 const trailingUrlPunctuationPattern = /[),.;:!?]+$/;
 const mobileMapControlMinX = 6;
 const mobileMapControlMaxX = 94;
+const mobileMapOpacityMin = 0.25;
+const mobileMapOpacityMax = 1;
+const mobileMapStoryPreset = {
+  controlX: 32,
+  height: 34,
+  opacity: 0.46,
+};
+const mobileMapFocusPreset = {
+  controlX: mobileMapControlMaxX,
+  height: 70,
+  opacity: mobileMapOpacityMax,
+};
 
 function parseYouTubeStartSeconds(startTime: string) {
   if (/^\d+$/.test(startTime)) {
@@ -1493,6 +1505,7 @@ function AddActivityPage({ session }: AddActivityPageProps) {
 type ActivityStoryProps = {
   activity: SelectedProjectActivity;
   onBack: () => void;
+  isArriving?: boolean;
 };
 
 type MobileMode = 'project' | 'progress' | 'search' | 'donate';
@@ -1547,7 +1560,7 @@ function renderActivityParagraph(paragraph: string, paragraphIndex: number) {
     : [<p key={`text-${paragraphIndex}`}>{paragraph}</p>];
 }
 
-function ActivityStory({ activity, onBack }: ActivityStoryProps) {
+function ActivityStory({ activity, onBack, isArriving = false }: ActivityStoryProps) {
   const description = activity.text_description?.trim();
   const paragraphs = description
     ? description.split(/\n{2,}/).map((paragraph) => paragraph.trim())
@@ -1560,7 +1573,7 @@ function ActivityStory({ activity, onBack }: ActivityStoryProps) {
       : 'journey-voyager';
 
   return (
-    <article className="route-story">
+    <article className={`route-story${isArriving ? ' route-story-arriving' : ''}`}>
       <p className={`eyebrow ${activityRouteClass}`}>
         {activity.pfp_type ?? 'Project Far Point Route'}
       </p>
@@ -1656,12 +1669,31 @@ function App() {
   const session = useSupabaseSession();
   const storyPanelRef = useRef<HTMLElement | null>(null);
   const isDraggingMapControl = useRef(false);
+  const mapControlStart = useRef({ x: 0, y: 0 });
+  const hasMovedMapControl = useRef(false);
   const [selectedActivity, setSelectedActivity] =
     useState<SelectedProjectActivity | null>(null);
+  const [selectedActivityAnimationKey, setSelectedActivityAnimationKey] = useState(0);
   const [mobileMode, setMobileMode] = useState<MobileMode>('project');
+  const [showMapHandleHint, setShowMapHandleHint] = useState(true);
   const [mobileMapHeight, setMobileMapHeight] = useState(48);
   const [mobileMapControlX, setMobileMapControlX] = useState(94);
   const [mobileMapOpacity, setMobileMapOpacity] = useState(1);
+
+  const applyMobileMapPreset = useCallback(
+    (preset: typeof mobileMapStoryPreset | typeof mobileMapFocusPreset) => {
+      setMobileMapHeight(preset.height);
+      setMobileMapControlX(preset.controlX);
+      setMobileMapOpacity(preset.opacity);
+    },
+    [],
+  );
+
+  const toggleMobileMapPreset = useCallback(() => {
+    const isFocusedMap = mobileMapHeight >= 58 && mobileMapOpacity > 0.85;
+
+    applyMobileMapPreset(isFocusedMap ? mobileMapStoryPreset : mobileMapFocusPreset);
+  }, [applyMobileMapPreset, mobileMapHeight, mobileMapOpacity]);
 
   const updateMobileMapFromPointer = useCallback((clientX: number, clientY: number) => {
     const viewportWidth = Math.max(window.innerWidth, 1);
@@ -1677,7 +1709,9 @@ function App() {
     const opacityProgress =
       (nextControlX - mobileMapControlMinX) /
       (mobileMapControlMaxX - mobileMapControlMinX);
-    const nextOpacity = 0.25 + opacityProgress * 0.75;
+    const nextOpacity =
+      mobileMapOpacityMin +
+      opacityProgress * (mobileMapOpacityMax - mobileMapOpacityMin);
 
     setMobileMapHeight(nextHeight);
     setMobileMapControlX(nextControlX);
@@ -1686,6 +1720,12 @@ function App() {
 
   function handleMobileMapControlPointerDown(event: React.PointerEvent<HTMLButtonElement>) {
     isDraggingMapControl.current = true;
+    hasMovedMapControl.current = false;
+    mapControlStart.current = {
+      x: event.clientX,
+      y: event.clientY,
+    };
+    setShowMapHandleHint(false);
     event.currentTarget.setPointerCapture(event.pointerId);
     updateMobileMapFromPointer(event.clientX, event.clientY);
   }
@@ -1693,6 +1733,15 @@ function App() {
   function handleMobileMapControlPointerMove(event: React.PointerEvent<HTMLButtonElement>) {
     if (!isDraggingMapControl.current) {
       return;
+    }
+
+    if (
+      Math.hypot(
+        event.clientX - mapControlStart.current.x,
+        event.clientY - mapControlStart.current.y,
+      ) > 7
+    ) {
+      hasMovedMapControl.current = true;
     }
 
     updateMobileMapFromPointer(event.clientX, event.clientY);
@@ -1703,6 +1752,10 @@ function App() {
 
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+
+    if (!hasMovedMapControl.current) {
+      toggleMobileMapPreset();
     }
   }
 
@@ -1720,6 +1773,7 @@ function App() {
 
   const handleActivitySelect = useCallback((activity: SelectedProjectActivity) => {
     setSelectedActivity(activity);
+    setSelectedActivityAnimationKey((currentKey) => currentKey + 1);
     setMobileMode('project');
     window.requestAnimationFrame(() => {
       if (window.matchMedia('(max-width: 980px)').matches) {
@@ -1831,8 +1885,10 @@ function App() {
         <article className="intro">
           {selectedActivity ? (
             <ActivityStory
+              key={`${selectedActivity.id}-${selectedActivityAnimationKey}`}
               activity={selectedActivity}
               onBack={handleBackToIntro}
+              isArriving
             />
           ) : (
             <div className="welcome-copy">
@@ -1907,14 +1963,16 @@ function App() {
         </div>
         <div className="globe-panel" aria-label="Interactive 3D globe">
           <button
-            className="mobile-map-control"
+            className={`mobile-map-control${showMapHandleHint ? ' mobile-map-control-with-hint' : ''}`}
             type="button"
             aria-label="Drag to resize and fade the map"
             onPointerDown={handleMobileMapControlPointerDown}
             onPointerMove={handleMobileMapControlPointerMove}
             onPointerUp={handleMobileMapControlPointerUp}
             onPointerCancel={handleMobileMapControlPointerUp}
-          />
+          >
+            <span aria-hidden="true">Drag Me!</span>
+          </button>
           <GlobeView
             selectedActivityId={selectedActivity?.id ?? null}
             onActivitySelect={handleActivitySelect}
