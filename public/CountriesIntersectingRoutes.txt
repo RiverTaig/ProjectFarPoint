@@ -1,0 +1,40 @@
+Using the same great-circle math as the app’s Voyager route, and intersecting a dense sample of the line with Natural Earth-derived country polygons, the 20,038 km Voyager line passes through these countries, in order:
+
+New Zealand
+Australia
+Indonesia
+Malaysia
+Vietnam
+Cambodia
+Thailand
+Myanmar
+India
+Bangladesh
+Nepal
+China
+Pakistan
+Afghanistan
+Tajikistan
+Uzbekistan
+Kazakhstan
+Russia
+Ukraine
+Moldova
+Romania
+Hungary
+Slovakia
+Austria
+Germany
+Liechtenstein
+Switzerland
+France
+Spain
+
+Using the same great-circle math as the app's Far Point Trail route, and intersecting a dense sample of the line with Natural Earth-derived country polygons, the 20,038 km Far Point Trail line passes through these countries, in order:
+
+New Zealand
+Peru
+Brazil
+Guyana
+Spain
+
