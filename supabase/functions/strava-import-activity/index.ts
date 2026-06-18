@@ -6,6 +6,8 @@ import {
 
 type Coordinate = [number, number] | [number, number, number];
 
+const maxWalkingSpeedMetersPerSecond = 4.5;
+
 type ActivityMetadata = {
   city?: string;
   state?: string;
@@ -85,6 +87,76 @@ function simplifyCoordinates(coordinates: Coordinate[], tolerance: number): Coor
   return [...left.slice(0, -1), ...right];
 }
 
+function distanceMeters(start: Coordinate, end: Coordinate) {
+  const [lon1, lat1] = start;
+  const [lon2, lat2] = end;
+  const latDifference = (Math.PI / 180) * (lat2 - lat1);
+  const lonDifference = (Math.PI / 180) * (lon2 - lon1);
+  const lat1Radians = (Math.PI / 180) * lat1;
+  const lat2Radians = (Math.PI / 180) * lat2;
+  const haversine =
+    Math.sin(latDifference / 2) ** 2 +
+    Math.cos(lat1Radians) *
+      Math.cos(lat2Radians) *
+      Math.sin(lonDifference / 2) ** 2;
+
+  return 2 * 6371008.8 * Math.asin(Math.min(1, Math.sqrt(haversine)));
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function removeImpossibleSpeedSpikes(
+  coordinates: Coordinate[],
+  timeData: number[] | undefined,
+) {
+  if (!timeData || coordinates.length < 3 || timeData.length !== coordinates.length) {
+    return coordinates;
+  }
+
+  const cleanedCoordinates: Coordinate[] = [];
+
+  for (let index = 0; index < coordinates.length; index += 1) {
+    const previous = cleanedCoordinates[cleanedCoordinates.length - 1];
+    const current = coordinates[index];
+    const next = coordinates[index + 1];
+    const previousTime = timeData[index - 1];
+    const currentTime = timeData[index];
+    const nextTime = timeData[index + 1];
+
+    if (
+      previous &&
+      next &&
+      isFiniteNumber(previousTime) &&
+      isFiniteNumber(currentTime) &&
+      isFiniteNumber(nextTime)
+    ) {
+      const previousSeconds = currentTime - previousTime;
+      const nextSeconds = nextTime - currentTime;
+      const skipSeconds = nextTime - previousTime;
+      const previousDistance = distanceMeters(previous, current);
+      const nextDistance = distanceMeters(current, next);
+      const skipDistance = distanceMeters(previous, next);
+      const previousSpeed = previousSeconds > 0 ? previousDistance / previousSeconds : 0;
+      const nextSpeed = nextSeconds > 0 ? nextDistance / nextSeconds : 0;
+      const skipSpeed = skipSeconds > 0 ? skipDistance / skipSeconds : 0;
+
+      if (
+        previousSpeed > maxWalkingSpeedMetersPerSecond &&
+        nextSpeed > maxWalkingSpeedMetersPerSecond &&
+        skipSpeed <= maxWalkingSpeedMetersPerSecond
+      ) {
+        continue;
+      }
+    }
+
+    cleanedCoordinates.push(current);
+  }
+
+  return cleanedCoordinates;
+}
+
 Deno.serve(async (request) => {
   const origin = request.headers.get('origin');
   const headers = corsHeaders(origin);
@@ -134,11 +206,12 @@ Deno.serve(async (request) => {
     const province =
       cleanText(metadata.province) ??
       (country === 'Canada' ? cleanText(activity.location_state) : null);
+    const pfpType = cleanPfpType(metadata.pfpType);
     const streamsUrl = new URL(
       `https://www.strava.com/api/v3/activities/${activityId}/streams`,
     );
 
-    streamsUrl.searchParams.set('keys', 'latlng,altitude');
+    streamsUrl.searchParams.set('keys', 'latlng,altitude,time');
     streamsUrl.searchParams.set('key_by_type', 'true');
 
     const streamsResponse = await fetch(streamsUrl, {
@@ -154,22 +227,47 @@ Deno.serve(async (request) => {
     const streams = await streamsResponse.json();
     const latLngData = streams.latlng?.data as [number, number][] | undefined;
     const altitudeData = streams.altitude?.data as number[] | undefined;
+    const timeData = streams.time?.data as number[] | undefined;
 
     if (!latLngData?.length) {
       throw new Error('This activity does not include route geometry.');
     }
 
-    const coordinates: Coordinate[] = latLngData.map(([latitude, longitude], index) => {
+    const rawCoordinates: Coordinate[] = latLngData.map(([latitude, longitude], index) => {
       const altitude = altitudeData?.[index];
 
       return typeof altitude === 'number'
         ? [longitude, latitude, altitude]
         : [longitude, latitude];
     });
+    const coordinates = removeImpossibleSpeedSpikes(rawCoordinates, timeData);
+
+    if (coordinates.length < 2) {
+      throw new Error('This activity does not include enough usable route geometry.');
+    }
     const geometry = {
       type: 'LineString',
       coordinates,
     };
+    let distanceMadeGood: number | null = null;
+
+    if (pfpType === 'Voyager') {
+      const { data: calculatedDistanceMadeGood, error: distanceMadeGoodError } =
+        await serviceClient.rpc('pfp_distance_made_good_km', {
+          new_geometry_geojson: geometry,
+          new_started_at: activity.start_date,
+          new_source: 'strava',
+          new_source_activity_id: Number(activity.id),
+          threshold_meters: 15,
+          new_distance_meters: activity.distance,
+        });
+
+      if (distanceMadeGoodError) {
+        throw distanceMadeGoodError;
+      }
+
+      distanceMadeGood = cleanNumber(calculatedDistanceMadeGood);
+    }
 
     const { data: importedActivity, error: upsertError } = await serviceClient
       .from('project_activities')
@@ -190,9 +288,9 @@ Deno.serve(async (request) => {
           province,
           country,
           corrected_distance: cleanNumber(metadata.correctedDistance),
-          distance_made_good: cleanNumber(metadata.distanceMadeGood),
+          distance_made_good: distanceMadeGood,
           trail_name: cleanText(metadata.trailName),
-          pfp_type: cleanPfpType(metadata.pfpType),
+          pfp_type: pfpType,
           text_description: cleanText(metadata.textDescription),
           geometry_geojson: geometry,
           geometry_simplified_low: {
@@ -214,7 +312,7 @@ Deno.serve(async (request) => {
           onConflict: 'source,source_activity_id',
         },
       )
-      .select('id,name')
+      .select('id,name,pfp_type,distance_made_good')
       .single();
 
     if (upsertError) {

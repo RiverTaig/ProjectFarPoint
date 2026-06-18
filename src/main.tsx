@@ -1,5 +1,11 @@
 import { StrictMode, useCallback, useEffect, useRef, useState } from 'react';
-import type { CSSProperties, ChangeEvent, FormEvent, ReactNode } from 'react';
+import type {
+  CSSProperties,
+  ChangeEvent,
+  FormEvent,
+  ReactNode,
+  TouchEvent,
+} from 'react';
 import { createRoot } from 'react-dom/client';
 import '@arcgis/core/assets/esri/themes/dark/main.css';
 import Camera from '@arcgis/core/Camera.js';
@@ -22,14 +28,15 @@ type ProjectActivity = {
   id: string;
   name: string;
   sport_type: string | null;
+  started_at: string | null;
   pfp_type: 'Voyager' | 'Far Point Trail' | null;
   trail_name: string | null;
   city: string | null;
   state: string | null;
   province: string | null;
   country: string | null;
-  corrected_distance: number | null;
-  distance_made_good: number | null;
+  corrected_distance: number | string | null;
+  distance_made_good: number | string | null;
   text_description: string | null;
   geometry_simplified_medium: {
     type: 'LineString';
@@ -46,6 +53,7 @@ type SelectedProjectActivity = Pick<
   | 'id'
   | 'name'
   | 'sport_type'
+  | 'started_at'
   | 'pfp_type'
   | 'trail_name'
   | 'city'
@@ -56,6 +64,17 @@ type SelectedProjectActivity = Pick<
   | 'distance_made_good'
   | 'text_description'
 >;
+
+type ProjectActivityImage = {
+  id: string;
+  activity_id: string;
+  name: string;
+  storage_bucket: string;
+  storage_path: string;
+  caption: string | null;
+  alt_text: string | null;
+  sort_order: number;
+};
 
 type StravaActivity = {
   id: number;
@@ -80,6 +99,13 @@ type ActivityMetadata = {
   trailName: string;
   pfpType: 'Voyager' | 'Far Point Trail';
   textDescription: string;
+};
+
+type ActivityImageInput = {
+  id: string;
+  name: string;
+  caption: string;
+  file: File | null;
 };
 
 const voyagerStart: LatLon = {
@@ -311,6 +337,15 @@ function createActivityMetadata(activity?: StravaActivity): ActivityMetadata {
   };
 }
 
+function createActivityImageInput(): ActivityImageInput {
+  return {
+    id: crypto.randomUUID(),
+    name: '',
+    caption: '',
+    file: null,
+  };
+}
+
 function createLoremIpsumDescription() {
   const paragraphs = [
     'Lorem ipsum dolor sit amet, consectetur adipiscing elit. Curabitur vitae mauris at neque tincidunt dictum. Integer accumsan, sapien quis facilisis pretium, arcu mauris tempor ipsum, vitae viverra justo magna non velit. Sed non sem euismod, vehicula lectus sed, aliquet neque. Donec luctus, nisl at posuere commodo, metus justo ultrices ligula, vitae pulvinar nunc libero at est. Praesent commodo augue sit amet mi varius, sed dictum nibh hendrerit.',
@@ -321,18 +356,44 @@ function createLoremIpsumDescription() {
   return paragraphs.join('\n\n').slice(0, 1000);
 }
 
-function formatKilometers(value: number | null) {
-  if (typeof value !== 'number') {
+function formatKilometers(value: number | string | null) {
+  if (value === null || value === '') {
     return null;
   }
 
-  return `${value.toLocaleString(undefined, {
+  const numberValue = typeof value === 'string' ? Number(value) : value;
+
+  if (!Number.isFinite(numberValue)) {
+    return null;
+  }
+
+  return `${numberValue.toLocaleString(undefined, {
     maximumFractionDigits: 2,
   })} km`;
 }
 
-const youtubeUrlPattern = /https?:\/\/(?:www\.|m\.)?(?:youtube\.com|youtu\.be)\/[^\s<>"']+/gi;
+function formatActivityDateTime(value: string | null) {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return date.toLocaleString(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
+}
+
+const videoShortcodeOrYouTubeUrlPattern =
+  /\{(Video|Image|ImageCarousel)\s+([^{}]+)\}|https?:\/\/(?:www\.|m\.)?(?:youtube\.com|youtu\.be)\/[^\s<>"']+/gi;
+const quotedAttributePattern = /(\w+)="([^"]*)"/g;
 const trailingUrlPunctuationPattern = /[),.;:!?]+$/;
+const imageNamePattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const mobileMapControlMinX = 6;
 const mobileMapControlMaxX = 94;
 const mobileMapOpacityMin = 0.25;
@@ -418,6 +479,45 @@ function splitTrailingUrlPunctuation(url: string) {
     url: punctuation ? url.slice(0, -punctuation.length) : url,
     punctuation,
   };
+}
+
+function parseQuotedAttributes(value: string) {
+  const attributes: Record<string, string> = {};
+
+  for (const match of value.matchAll(quotedAttributePattern)) {
+    attributes[match[1]] = match[2];
+  }
+
+  return attributes;
+}
+
+function getImageFileExtension(file: File) {
+  const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
+
+  if (['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(extension)) {
+    return extension === 'jpeg' ? 'jpg' : extension;
+  }
+
+  switch (file.type) {
+    case 'image/png':
+      return 'png';
+    case 'image/webp':
+      return 'webp';
+    case 'image/gif':
+      return 'gif';
+    default:
+      return 'jpg';
+  }
+}
+
+function getActivityImagePublicUrl(image: ProjectActivityImage) {
+  if (!supabase) {
+    return '';
+  }
+
+  return supabase.storage
+    .from(image.storage_bucket)
+    .getPublicUrl(image.storage_path).data.publicUrl;
 }
 
 function setBasemapLabelsVisible(map: Map, isVisible: boolean) {
@@ -714,7 +814,7 @@ function GlobeView({ selectedActivityId, onActivitySelect }: GlobeViewProps) {
       supabase
         .from('project_activities')
         .select(
-          'id,name,sport_type,pfp_type,trail_name,city,state,province,country,corrected_distance,distance_made_good,text_description,geometry_simplified_medium,geometry_geojson',
+          'id,name,sport_type,started_at,pfp_type,trail_name,city,state,province,country,corrected_distance,distance_made_good,text_description,geometry_simplified_medium,geometry_geojson',
         )
         .not('geometry_geojson', 'is', null)
         .then(({ data, error }) => {
@@ -787,10 +887,7 @@ function GlobeView({ selectedActivityId, onActivitySelect }: GlobeViewProps) {
         components: ['compass'],
       },
     });
-    setBasemapLabelsVisible(map, (view.zoom ?? 0) < 12);
-    const zoomHandle = view.watch('zoom', (zoom) => {
-      setBasemapLabelsVisible(map, zoom < 12);
-    });
+    setBasemapLabelsVisible(map, true);
     view.when(() => {
       if (isDestroyed) {
         return;
@@ -846,7 +943,6 @@ function GlobeView({ selectedActivityId, onActivitySelect }: GlobeViewProps) {
       importedActivityGraphics.current.clear();
       selectedActivityGraphic.current = null;
       clickHandle.remove();
-      zoomHandle.remove();
       view.destroy();
     };
   }, [onActivitySelect]);
@@ -1153,6 +1249,7 @@ function AddActivityPage({ session }: AddActivityPageProps) {
   const [activityMetadata, setActivityMetadata] = useState<ActivityMetadata>(
     createActivityMetadata(),
   );
+  const [activityImages, setActivityImages] = useState<ActivityImageInput[]>([]);
   const [isLoadingActivities, setIsLoadingActivities] = useState(false);
   const [isImportingActivity, setIsImportingActivity] = useState(false);
   const searchParams = new URLSearchParams(window.location.search);
@@ -1163,6 +1260,7 @@ function AddActivityPage({ session }: AddActivityPageProps) {
 
   useEffect(() => {
     setActivityMetadata(createActivityMetadata(selectedActivity));
+    setActivityImages([]);
   }, [selectedActivity]);
 
   function handleMetadataChange(
@@ -1181,6 +1279,128 @@ function AddActivityPage({ session }: AddActivityPageProps) {
       ...currentMetadata,
       textDescription: createLoremIpsumDescription(),
     }));
+  }
+
+  function handleAddImageInput() {
+    setActivityImages((currentImages) =>
+      currentImages.length >= 10 ? currentImages : [...currentImages, createActivityImageInput()],
+    );
+  }
+
+  function handleRemoveImageInput(imageId: string) {
+    setActivityImages((currentImages) =>
+      currentImages.filter((image) => image.id !== imageId),
+    );
+  }
+
+  function handleImageInputChange(
+    imageId: string,
+    field: 'name' | 'caption',
+    value: string,
+  ) {
+    setActivityImages((currentImages) =>
+      currentImages.map((image) =>
+        image.id === imageId ? { ...image, [field]: value } : image,
+      ),
+    );
+  }
+
+  function handleImageFileChange(imageId: string, file: File | null) {
+    setActivityImages((currentImages) =>
+      currentImages.map((image) =>
+        image.id === imageId ? { ...image, file } : image,
+      ),
+    );
+  }
+
+  function validateActivityImages() {
+    const names = new Set<string>();
+
+    for (const image of activityImages) {
+      const name = image.name.trim();
+
+      if (!name && !image.file && !image.caption.trim()) {
+        continue;
+      }
+
+      if (!name || !image.file) {
+        throw new Error('Each image needs both a name and a file.');
+      }
+
+      if (!imageNamePattern.test(name)) {
+        throw new Error(
+          'Image names must start with a letter or number and can only use letters, numbers, hyphens, and underscores.',
+        );
+      }
+
+      const normalizedName = name.toLowerCase();
+
+      if (names.has(normalizedName)) {
+        throw new Error(`Image name "${name}" is already used for this activity.`);
+      }
+
+      names.add(normalizedName);
+    }
+  }
+
+  async function uploadActivityImages(activityId: string) {
+    const readyImages = activityImages.filter((image) => image.name.trim() && image.file);
+
+    if (readyImages.length === 0) {
+      return 0;
+    }
+
+    if (!supabase) {
+      throw new Error('Supabase is not configured.');
+    }
+
+    for (const [index, image] of readyImages.entries()) {
+      const file = image.file;
+
+      if (!file) {
+        continue;
+      }
+
+      const name = image.name.trim();
+      const extension = getImageFileExtension(file);
+      const storagePath = `${activityId}/${name}.${extension}`;
+      const { error: uploadError } = await supabase.storage
+        .from('project-activity-images')
+        .upload(storagePath, file, {
+          cacheControl: '31536000',
+          contentType: file.type || undefined,
+          upsert: true,
+        });
+
+      if (uploadError) {
+        throw new Error(`Image upload failed for "${name}": ${uploadError.message}`);
+      }
+
+      const { error: imageError } = await supabase
+        .from('project_activity_images')
+        .upsert(
+          {
+            activity_id: activityId,
+            name,
+            storage_bucket: 'project-activity-images',
+            storage_path: storagePath,
+            caption: image.caption.trim() || null,
+            alt_text: image.caption.trim() || name,
+            sort_order: index,
+            content_type: file.type || null,
+            size_bytes: file.size,
+          },
+          {
+            onConflict: 'activity_id,name',
+          },
+        );
+
+      if (imageError) {
+        throw new Error(`Image metadata failed for "${name}": ${imageError.message}`);
+      }
+    }
+
+    return readyImages.length;
   }
 
   async function handleLoadActivities() {
@@ -1237,6 +1457,8 @@ function AddActivityPage({ session }: AddActivityPageProps) {
         throw new Error('Supabase is not configured.');
       }
 
+      validateActivityImages();
+
       const { data, error: functionError } = await supabase.functions.invoke(
         'strava-import-activity',
         {
@@ -1251,7 +1473,25 @@ function AddActivityPage({ session }: AddActivityPageProps) {
         throw functionError;
       }
 
-      setStatus(`Imported ${data.activity?.name ?? 'activity'}.`);
+      const importedActivityId = data.activity?.id;
+
+      if (!importedActivityId) {
+        throw new Error('The imported activity id was not returned.');
+      }
+
+      const uploadedImageCount = await uploadActivityImages(importedActivityId);
+
+      const distanceMadeGood = formatKilometers(data.activity?.distance_made_good ?? null);
+      const imageMessage =
+        uploadedImageCount > 0
+          ? ` Uploaded ${uploadedImageCount} image${uploadedImageCount === 1 ? '' : 's'}.`
+          : '';
+      const importMessage =
+        data.activity?.pfp_type === 'Voyager' && distanceMadeGood
+          ? `Imported ${data.activity?.name ?? 'activity'} with ${distanceMadeGood} made good.${imageMessage}`
+          : `Imported ${data.activity?.name ?? 'activity'}.${imageMessage}`;
+
+      setStatus(importMessage);
     } catch (importError) {
       setError(
         importError instanceof Error
@@ -1474,6 +1714,81 @@ function AddActivityPage({ session }: AddActivityPageProps) {
                   >
                     Generate Lorem Ipsum
                   </button>
+
+                  <div className="activity-image-upload-section">
+                    <div className="activity-image-upload-header">
+                      <span>Activity images</span>
+                      <button
+                        className="activity-secondary-button"
+                        type="button"
+                        onClick={handleAddImageInput}
+                        disabled={activityImages.length >= 10}
+                      >
+                        Add image
+                      </button>
+                    </div>
+
+                    {activityImages.length > 0 && (
+                      <div className="activity-image-upload-list">
+                        {activityImages.map((image, index) => (
+                          <div className="activity-image-upload-row" key={image.id}>
+                            <label>
+                              <span>Name</span>
+                              <input
+                                value={image.name}
+                                onChange={(event) =>
+                                  handleImageInputChange(
+                                    image.id,
+                                    'name',
+                                    event.target.value,
+                                  )
+                                }
+                                placeholder={index === 0 ? 'dog' : 'butterfly'}
+                              />
+                            </label>
+
+                            <label>
+                              <span>Caption</span>
+                              <input
+                                value={image.caption}
+                                onChange={(event) =>
+                                  handleImageInputChange(
+                                    image.id,
+                                    'caption',
+                                    event.target.value,
+                                  )
+                                }
+                                placeholder={index === 0 ? 'my dog' : 'pretty butterfly'}
+                              />
+                            </label>
+
+                            <label className="activity-image-file-field">
+                              <span>File</span>
+                              <input
+                                type="file"
+                                accept="image/jpeg,image/png,image/webp,image/gif"
+                                onChange={(event) =>
+                                  handleImageFileChange(
+                                    image.id,
+                                    event.target.files?.[0] ?? null,
+                                  )
+                                }
+                              />
+                            </label>
+
+                            <button
+                              className="activity-image-remove-button"
+                              type="button"
+                              onClick={() => handleRemoveImageInput(image.id)}
+                              aria-label={`Remove image ${index + 1}`}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 <button
@@ -1510,17 +1825,236 @@ type ActivityStoryProps = {
 
 type MobileMode = 'project' | 'progress' | 'search' | 'donate';
 
-function renderActivityParagraph(paragraph: string, paragraphIndex: number) {
+type ActivityImageCarouselProps = {
+  images: ProjectActivityImage[];
+  onOpenImage: (image: ProjectActivityImage) => void;
+};
+
+function ActivityImageCarousel({ images, onOpenImage }: ActivityImageCarouselProps) {
+  const [activeIndex, setActiveIndex] = useState(0);
+  const touchStartX = useRef<number | null>(null);
+  const safeActiveIndex = images.length > 0 ? activeIndex % images.length : 0;
+  const activeImage = images[safeActiveIndex];
+
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [images]);
+
+  if (!activeImage) {
+    return null;
+  }
+
+  function showPreviousImage() {
+    setActiveIndex((currentIndex) =>
+      images.length === 0
+        ? 0
+        : (currentIndex - 1 + images.length) % images.length,
+    );
+  }
+
+  function showNextImage() {
+    setActiveIndex((currentIndex) =>
+      images.length === 0 ? 0 : (currentIndex + 1) % images.length,
+    );
+  }
+
+  function handleTouchStart(event: TouchEvent<HTMLDivElement>) {
+    touchStartX.current = event.touches[0]?.clientX ?? null;
+  }
+
+  function handleTouchEnd(event: TouchEvent<HTMLDivElement>) {
+    const startX = touchStartX.current;
+    const endX = event.changedTouches[0]?.clientX ?? null;
+
+    touchStartX.current = null;
+
+    if (startX === null || endX === null || Math.abs(startX - endX) < 44) {
+      return;
+    }
+
+    if (endX < startX) {
+      showNextImage();
+    } else {
+      showPreviousImage();
+    }
+  }
+
+  return (
+    <figure
+      className="route-story-carousel"
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
+    >
+      <div className="route-story-carousel-stage">
+        {images.length > 1 && (
+          <button
+            className="route-story-carousel-control route-story-carousel-previous"
+            type="button"
+            onClick={showPreviousImage}
+            aria-label="Previous image"
+          >
+            <span aria-hidden="true">‹</span>
+          </button>
+        )}
+
+        <button
+          className="route-story-carousel-button"
+          type="button"
+          onClick={() => onOpenImage(activeImage)}
+        >
+          <img
+            key={activeImage.id}
+            src={getActivityImagePublicUrl(activeImage)}
+            alt={activeImage.alt_text || activeImage.caption || activeImage.name}
+            loading="lazy"
+          />
+        </button>
+
+        {images.length > 1 && (
+          <button
+            className="route-story-carousel-control route-story-carousel-next"
+            type="button"
+            onClick={showNextImage}
+            aria-label="Next image"
+          >
+            <span aria-hidden="true">›</span>
+          </button>
+        )}
+      </div>
+
+      <div className="route-story-carousel-footer">
+        {activeImage.caption && <figcaption>{activeImage.caption}</figcaption>}
+        {images.length > 1 && (
+          <span className="route-story-carousel-count">
+            {safeActiveIndex + 1} / {images.length}
+          </span>
+        )}
+      </div>
+    </figure>
+  );
+}
+
+function renderActivityImageFigure(
+  image: ProjectActivityImage,
+  key: string,
+  onOpenImage: (image: ProjectActivityImage) => void,
+  captionOverride?: string,
+) {
+  const imageUrl = getActivityImagePublicUrl(image);
+  const caption = captionOverride?.trim() || image.caption?.trim();
+
+  return (
+    <figure className="route-story-image" key={key}>
+      <button
+        className="route-story-image-button"
+        type="button"
+        onClick={() => onOpenImage(image)}
+      >
+        <img
+          src={imageUrl}
+          alt={image.alt_text || caption || image.name}
+          loading="lazy"
+        />
+      </button>
+      {caption && <figcaption>{caption}</figcaption>}
+    </figure>
+  );
+}
+
+function renderActivityImageCarousel(
+  images: ProjectActivityImage[],
+  key: string,
+  onOpenImage: (image: ProjectActivityImage) => void,
+) {
+  if (images.length === 0) {
+    return null;
+  }
+
+  return (
+    <ActivityImageCarousel
+      images={images}
+      key={key}
+      onOpenImage={onOpenImage}
+    />
+  );
+}
+
+function renderActivityParagraph(
+  paragraph: string,
+  paragraphIndex: number,
+  images: ProjectActivityImage[],
+  onOpenImage: (image: ProjectActivityImage) => void,
+) {
   const parts: ReactNode[] = [];
   let textStart = 0;
+  const imagesByName = new globalThis.Map(
+    images.map((image) => [image.name.toLowerCase(), image]),
+  );
 
-  for (const match of paragraph.matchAll(youtubeUrlPattern)) {
+  for (const match of paragraph.matchAll(videoShortcodeOrYouTubeUrlPattern)) {
     const rawMatch = match[0];
     const matchIndex = match.index ?? 0;
-    const { url } = splitTrailingUrlPunctuation(rawMatch);
-    const embedUrl = getYouTubeEmbedUrl(url);
+    const shortcodeType = match[1] ?? 'Video';
+    const shortcodeAttributes = match[2]
+      ? parseQuotedAttributes(match[2])
+      : null;
+    let renderedShortcode: ReactNode = null;
 
-    if (!embedUrl) {
+    if (shortcodeType === 'Image' && shortcodeAttributes) {
+      const imageName = shortcodeAttributes.name?.trim().toLowerCase();
+      const image = imageName ? imagesByName.get(imageName) : null;
+
+      if (!image) {
+        continue;
+      }
+
+      renderedShortcode = renderActivityImageFigure(
+        image,
+        `image-${paragraphIndex}-${matchIndex}`,
+        onOpenImage,
+        shortcodeAttributes.caption,
+      );
+    } else if (shortcodeType === 'ImageCarousel' && shortcodeAttributes) {
+      const carouselImages =
+        shortcodeAttributes.images
+          ?.split(',')
+          .map((name) => imagesByName.get(name.trim().toLowerCase()))
+          .filter((image): image is ProjectActivityImage => Boolean(image)) ?? [];
+
+      renderedShortcode = renderActivityImageCarousel(
+        carouselImages,
+        `carousel-${paragraphIndex}-${matchIndex}`,
+        onOpenImage,
+      );
+    } else {
+      const rawUrl = shortcodeAttributes?.url ?? rawMatch;
+      const { url } = shortcodeAttributes
+        ? { url: rawUrl }
+        : splitTrailingUrlPunctuation(rawUrl);
+      const embedUrl = getYouTubeEmbedUrl(url);
+      const caption = shortcodeAttributes?.caption?.trim();
+
+      if (!embedUrl) {
+        continue;
+      }
+
+      renderedShortcode = (
+        <figure className="route-story-video" key={`video-${paragraphIndex}-${matchIndex}`}>
+          <div className="route-story-video-frame">
+            <iframe
+              src={embedUrl}
+              title={caption || 'Activity video'}
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+              allowFullScreen
+              loading="lazy"
+            />
+          </div>
+          {caption && <figcaption>{caption}</figcaption>}
+        </figure>
+      );
+    }
+
+    if (!renderedShortcode) {
       continue;
     }
 
@@ -1532,19 +2066,9 @@ function renderActivityParagraph(paragraph: string, paragraphIndex: number) {
       );
     }
 
-    parts.push(
-      <figure className="route-story-video" key={`video-${paragraphIndex}-${matchIndex}`}>
-        <iframe
-          src={embedUrl}
-          title="Activity video"
-          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-          allowFullScreen
-          loading="lazy"
-        />
-      </figure>,
-    );
+    parts.push(renderedShortcode);
 
-    textStart = matchIndex + url.length;
+    textStart = matchIndex + rawMatch.length;
   }
 
   if (textStart < paragraph.length) {
@@ -1561,16 +2085,53 @@ function renderActivityParagraph(paragraph: string, paragraphIndex: number) {
 }
 
 function ActivityStory({ activity, onBack, isArriving = false }: ActivityStoryProps) {
+  const [activityImages, setActivityImages] = useState<ProjectActivityImage[]>([]);
+  const [activeImage, setActiveImage] = useState<ProjectActivityImage | null>(null);
   const description = activity.text_description?.trim();
   const paragraphs = description
     ? description.split(/\n{2,}/).map((paragraph) => paragraph.trim())
     : ['No route description has been added yet.'];
   const correctedDistance = formatKilometers(activity.corrected_distance);
   const distanceMadeGood = formatKilometers(activity.distance_made_good);
+  const activityDateTime = formatActivityDateTime(activity.started_at);
   const activityRouteClass =
     activity.pfp_type === 'Far Point Trail'
       ? 'journey-far-point'
       : 'journey-voyager';
+  const activeImageUrl = activeImage ? getActivityImagePublicUrl(activeImage) : '';
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    if (!supabase) {
+      setActivityImages([]);
+      return;
+    }
+
+    supabase
+      .from('project_activity_images')
+      .select('id,activity_id,name,storage_bucket,storage_path,caption,alt_text,sort_order')
+      .eq('activity_id', activity.id)
+      .order('sort_order', { ascending: true })
+      .order('created_at', { ascending: true })
+      .then(({ data, error }) => {
+        if (isCancelled) {
+          return;
+        }
+
+        if (error) {
+          console.error('Could not load activity images.', error);
+          setActivityImages([]);
+          return;
+        }
+
+        setActivityImages(data ?? []);
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activity.id]);
 
   return (
     <article className={`route-story${isArriving ? ' route-story-arriving' : ''}`}>
@@ -1591,14 +2152,43 @@ function ActivityStory({ activity, onBack, isArriving = false }: ActivityStoryPr
             <path d="M9.5 21v-6.2h5V21" />
           </svg>
         </button>
-        {correctedDistance && <span>{correctedDistance}</span>}
-        {distanceMadeGood && <span>{distanceMadeGood} made good</span>}
+        {activityDateTime && <span>{activityDateTime}</span>}
+        {correctedDistance && <span>Distance: {correctedDistance}</span>}
+        {distanceMadeGood && <span>Made good: {distanceMadeGood}</span>}
       </div>
       <div className="route-story-copy">
         {paragraphs.flatMap((paragraph, index) =>
-          renderActivityParagraph(paragraph, index),
+          renderActivityParagraph(paragraph, index, activityImages, setActiveImage),
         )}
       </div>
+      {activeImage && (
+        <div
+          className="route-story-lightbox"
+          role="dialog"
+          aria-modal="true"
+          aria-label={activeImage.caption || activeImage.name}
+          onClick={() => setActiveImage(null)}
+        >
+          <button
+            className="route-story-lightbox-close"
+            type="button"
+            onClick={() => setActiveImage(null)}
+            aria-label="Close image"
+          >
+            Close
+          </button>
+          <figure
+            className="route-story-lightbox-figure"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <img
+              src={activeImageUrl}
+              alt={activeImage.alt_text || activeImage.caption || activeImage.name}
+            />
+            {activeImage.caption && <figcaption>{activeImage.caption}</figcaption>}
+          </figure>
+        </div>
+      )}
     </article>
   );
 }
@@ -1679,6 +2269,8 @@ function App() {
   const [mobileMapHeight, setMobileMapHeight] = useState(48);
   const [mobileMapControlX, setMobileMapControlX] = useState(94);
   const [mobileMapOpacity, setMobileMapOpacity] = useState(1);
+  const [showLogoLightbox, setShowLogoLightbox] = useState(false);
+  const logoUrl = `${import.meta.env.BASE_URL}ProjectFarPoint.png`;
 
   const applyMobileMapPreset = useCallback(
     (preset: typeof mobileMapStoryPreset | typeof mobileMapFocusPreset) => {
@@ -1815,13 +2407,18 @@ function App() {
     >
       <div className="mobile-shell-header">
         <div className="mobile-brand-heading">
-          <div className="brand-mark">
+          <button
+            className="brand-mark brand-mark-button"
+            type="button"
+            onClick={() => setShowLogoLightbox(true)}
+            aria-label="Open Project Far Point logo"
+          >
             <img
               className="brand-art"
-              src={`${import.meta.env.BASE_URL}ProjectFarPoint.png`}
+              src={logoUrl}
               alt="Project FarPoint logo with planet Earth in space"
             />
-          </div>
+          </button>
           <div className="brand-title">
             <p className="eyebrow">Welcome to Project Far Point</p>
             <p className="mobile-brand-title">Project Far Point</p>
@@ -1868,13 +2465,18 @@ function App() {
       >
         <header className="brand-header">
           <div className="brand-heading">
-            <div className="brand-mark">
+            <button
+              className="brand-mark brand-mark-button"
+              type="button"
+              onClick={() => setShowLogoLightbox(true)}
+              aria-label="Open Project Far Point logo"
+            >
               <img
                 className="brand-art"
-                src={`${import.meta.env.BASE_URL}ProjectFarPoint.png`}
+                src={logoUrl}
                 alt="Project FarPoint logo with planet Earth in space"
               />
-            </div>
+            </button>
             <div className="brand-title">
               <p className="eyebrow">Welcome to Project Far Point</p>
               <h1 id="welcome-title">Project Far Point</h1>
@@ -1979,6 +2581,33 @@ function App() {
           />
         </div>
       </section>
+      {showLogoLightbox && (
+        <div
+          className="route-story-lightbox logo-lightbox"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Project Far Point logo"
+          onClick={() => setShowLogoLightbox(false)}
+        >
+          <button
+            className="route-story-lightbox-close"
+            type="button"
+            onClick={() => setShowLogoLightbox(false)}
+            aria-label="Close logo"
+          >
+            Close
+          </button>
+          <figure
+            className="route-story-lightbox-figure logo-lightbox-figure"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <img
+              src={logoUrl}
+              alt="Project FarPoint logo with planet Earth in space"
+            />
+          </figure>
+        </div>
+      )}
     </main>
   );
 }
