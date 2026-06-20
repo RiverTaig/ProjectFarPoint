@@ -63,6 +63,19 @@ Deno.serve(async (request) => {
 
   const tokenData = await tokenResponse.json();
   const expiresAt = new Date(tokenData.expires_at * 1000).toISOString();
+  const grantedScopes = new Set(
+    String(tokenData.scope ?? '')
+      .split(',')
+      .map((scope) => scope.trim())
+      .filter(Boolean),
+  );
+
+  if (!grantedScopes.has('read_all')) {
+    return redirectWithError(
+      stateRecord.return_to,
+      'Strava did not grant private route access. Reconnect Strava and approve the private routes permission.',
+    );
+  }
 
   const { error: upsertError } = await serviceClient
     .from('strava_connections')

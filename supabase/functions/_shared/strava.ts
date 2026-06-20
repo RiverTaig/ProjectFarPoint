@@ -2,6 +2,7 @@ import { createClient } from 'npm:@supabase/supabase-js@2';
 
 type StravaConnection = {
   user_id: string;
+  athlete_id: number;
   access_token: string;
   refresh_token: string;
   expires_at: string;
@@ -20,7 +21,7 @@ export async function getFreshStravaConnection(userId: string) {
   const serviceClient = createClient(supabaseUrl, supabaseServiceRoleKey);
   const { data: connection, error } = await serviceClient
     .from('strava_connections')
-    .select('user_id,access_token,refresh_token,expires_at')
+    .select('user_id,athlete_id,access_token,refresh_token,expires_at')
     .eq('user_id', userId)
     .maybeSingle<StravaConnection>();
 

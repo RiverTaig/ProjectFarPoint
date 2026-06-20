@@ -90,8 +90,8 @@ Deno.serve(async (request) => {
     authorizationUrl.searchParams.set('client_id', stravaClientId);
     authorizationUrl.searchParams.set('redirect_uri', stravaRedirectUri);
     authorizationUrl.searchParams.set('response_type', 'code');
-    authorizationUrl.searchParams.set('approval_prompt', 'auto');
-    authorizationUrl.searchParams.set('scope', 'read,activity:read_all');
+    authorizationUrl.searchParams.set('approval_prompt', 'force');
+    authorizationUrl.searchParams.set('scope', 'read,read_all,activity:read_all');
     authorizationUrl.searchParams.set('state', state);
 
     return Response.json(

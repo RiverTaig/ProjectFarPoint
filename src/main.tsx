@@ -89,13 +89,23 @@ type StravaActivity = {
   location_country: string | null;
 };
 
+type StravaRoute = {
+  id: string;
+  name: string;
+  distance: number;
+  elevation_gain: number | null;
+  estimated_moving_time: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+  type: number | null;
+  sub_type: number | null;
+};
+
+type StravaImportKind = 'activity' | 'route';
+type StravaImportItem = StravaActivity | StravaRoute;
+
 type ActivityMetadata = {
-  city: string;
-  state: string;
-  province: string;
-  country: string;
-  correctedDistance: string;
-  distanceMadeGood: string;
+  startedAt: string;
   trailName: string;
   pfpType: 'Voyager' | 'Far Point Trail';
   textDescription: string;
@@ -320,21 +330,94 @@ function createActivityLineSymbol(activity: ProjectActivity, isSelected = false)
   } as const;
 }
 
-function createActivityMetadata(activity?: StravaActivity): ActivityMetadata {
-  const country = activity?.location_country ?? '';
-  const region = activity?.location_state ?? '';
+function formatDateTimeLocalInput(value?: string | null) {
+  if (!value) {
+    return '';
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+
+  const offsetDate = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+
+  return offsetDate.toISOString().slice(0, 16);
+}
+
+function localDateTimeInputToIso(value: string) {
+  if (!value) {
+    return '';
+  }
+
+  const date = new Date(value);
+
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString();
+}
+
+function createActivityMetadata(item?: StravaImportItem): ActivityMetadata {
+  const isActivity = Boolean(item && 'start_date' in item);
+  const activity = isActivity ? (item as StravaActivity) : null;
+  const route = !isActivity ? (item as StravaRoute | undefined) : null;
 
   return {
-    city: activity?.location_city ?? '',
-    state: country && country !== 'Canada' ? region : '',
-    province: country === 'Canada' ? region : '',
-    country,
-    correctedDistance: activity ? (activity.distance / 1000).toFixed(2) : '',
-    distanceMadeGood: '',
+    startedAt: formatDateTimeLocalInput(activity?.start_date ?? route?.created_at),
     trailName: '',
     pfpType: 'Voyager',
     textDescription: '',
   };
+}
+
+function prepareActivityMetadata(metadata: ActivityMetadata): ActivityMetadata {
+  return {
+    ...metadata,
+    startedAt: localDateTimeInputToIso(metadata.startedAt),
+  };
+}
+
+async function getFunctionErrorMessage(error: unknown, fallbackMessage: string) {
+  const context =
+    typeof error === 'object' && error !== null && 'context' in error
+      ? (error as { context?: Response }).context
+      : null;
+
+  if (context) {
+    try {
+      const body = await context.clone().json();
+      const message = body?.error ?? body?.message;
+
+      if (typeof message === 'string' && message.trim()) {
+        return message;
+      }
+    } catch {
+      try {
+        const text = await context.clone().text();
+
+        if (text.trim()) {
+          return text;
+        }
+      } catch {
+        // Fall through to the generic error below.
+      }
+    }
+  }
+
+  return error instanceof Error && error.message !== 'Edge Function returned a non-2xx status code'
+    ? error.message
+    : fallbackMessage;
+}
+
+function extractStravaRouteId(value: string) {
+  const trimmedValue = value.trim();
+
+  if (!trimmedValue) {
+    return '';
+  }
+
+  const routeIdMatch = trimmedValue.match(/(?:^|\/routes\/)(\d+)(?:[/?#]|$)/);
+
+  return routeIdMatch?.[1] ?? trimmedValue;
 }
 
 function createActivityImageInput(): ActivityImageInput {
@@ -1244,24 +1327,37 @@ function AddActivityPage({ session }: AddActivityPageProps) {
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
   const [isConnecting, setIsConnecting] = useState(false);
+  const [importKind, setImportKind] = useState<StravaImportKind>('activity');
   const [activities, setActivities] = useState<StravaActivity[]>([]);
+  const [routes, setRoutes] = useState<StravaRoute[]>([]);
   const [selectedActivityId, setSelectedActivityId] = useState<number | null>(null);
+  const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
+  const [manualRouteReference, setManualRouteReference] = useState('');
   const [activityMetadata, setActivityMetadata] = useState<ActivityMetadata>(
     createActivityMetadata(),
   );
   const [activityImages, setActivityImages] = useState<ActivityImageInput[]>([]);
-  const [isLoadingActivities, setIsLoadingActivities] = useState(false);
+  const [isLoadingItems, setIsLoadingItems] = useState(false);
   const [isImportingActivity, setIsImportingActivity] = useState(false);
   const searchParams = new URLSearchParams(window.location.search);
   const stravaStatus = searchParams.get('strava');
   const selectedActivity = activities.find(
     (activity) => activity.id === selectedActivityId,
   );
+  const selectedRoute = routes.find((route) => route.id === selectedRouteId);
+  const selectedImportItem = importKind === 'activity' ? selectedActivity : selectedRoute;
+  const importKindLabel = importKind === 'activity' ? 'activity' : 'route';
+  const importKindLabelPlural = importKind === 'activity' ? 'activities' : 'routes';
+  const manualRouteId = extractStravaRouteId(manualRouteReference);
+  const routeIdToImport = manualRouteId || selectedRouteId;
+  const canShowImportForm =
+    (importKind === 'activity' && activities.length > 0) ||
+    importKind === 'route';
 
   useEffect(() => {
-    setActivityMetadata(createActivityMetadata(selectedActivity));
+    setActivityMetadata(createActivityMetadata(selectedImportItem));
     setActivityImages([]);
-  }, [selectedActivity]);
+  }, [selectedImportItem]);
 
   function handleMetadataChange(
     event: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>,
@@ -1403,10 +1499,16 @@ function AddActivityPage({ session }: AddActivityPageProps) {
     return readyImages.length;
   }
 
-  async function handleLoadActivities() {
+  function handleImportKindChange(nextImportKind: StravaImportKind) {
     setStatus('');
     setError('');
-    setIsLoadingActivities(true);
+    setImportKind(nextImportKind);
+  }
+
+  async function handleLoadStravaItems() {
+    setStatus('');
+    setError('');
+    setIsLoadingItems(true);
 
     try {
       if (!supabase) {
@@ -1414,7 +1516,7 @@ function AddActivityPage({ session }: AddActivityPageProps) {
       }
 
       const { data, error: functionError } = await supabase.functions.invoke(
-        'strava-list-activities',
+        importKind === 'activity' ? 'strava-list-activities' : 'strava-list-routes',
         {
           body: {
             page: 1,
@@ -1424,20 +1526,31 @@ function AddActivityPage({ session }: AddActivityPageProps) {
       );
 
       if (functionError) {
-        throw functionError;
+        throw new Error(
+          await getFunctionErrorMessage(
+            functionError,
+            `Could not load Strava ${importKindLabelPlural}.`,
+          ),
+        );
       }
 
-      setActivities(data.activities ?? []);
-      setSelectedActivityId(data.activities?.[0]?.id ?? null);
-      setStatus(`Loaded ${data.activities?.length ?? 0} Strava activities.`);
+      if (importKind === 'activity') {
+        setActivities(data.activities ?? []);
+        setSelectedActivityId(data.activities?.[0]?.id ?? null);
+        setStatus(`Loaded ${data.activities?.length ?? 0} Strava activities.`);
+      } else {
+        setRoutes(data.routes ?? []);
+        setSelectedRouteId(data.routes?.[0]?.id ?? null);
+        setStatus(`Loaded ${data.routes?.length ?? 0} Strava routes.`);
+      }
     } catch (loadError) {
       setError(
         loadError instanceof Error
           ? loadError.message
-          : 'Could not load Strava activities.',
+          : `Could not load Strava ${importKindLabelPlural}.`,
       );
     } finally {
-      setIsLoadingActivities(false);
+      setIsLoadingItems(false);
     }
   }
 
@@ -1445,8 +1558,11 @@ function AddActivityPage({ session }: AddActivityPageProps) {
     setStatus('');
     setError('');
 
-    if (!selectedActivityId) {
-      setError('Choose an activity to import.');
+    if (
+      (importKind === 'activity' && !selectedActivityId) ||
+      (importKind === 'route' && !routeIdToImport)
+    ) {
+      setError(`Choose a ${importKindLabel} to import.`);
       return;
     }
 
@@ -1460,17 +1576,24 @@ function AddActivityPage({ session }: AddActivityPageProps) {
       validateActivityImages();
 
       const { data, error: functionError } = await supabase.functions.invoke(
-        'strava-import-activity',
+        importKind === 'activity' ? 'strava-import-activity' : 'strava-import-route',
         {
           body: {
-            activityId: selectedActivityId,
-            metadata: activityMetadata,
+            ...(importKind === 'activity'
+              ? { activityId: selectedActivityId }
+              : { routeId: routeIdToImport }),
+            metadata: prepareActivityMetadata(activityMetadata),
           },
         },
       );
 
       if (functionError) {
-        throw functionError;
+        throw new Error(
+          await getFunctionErrorMessage(
+            functionError,
+            `Could not import Strava ${importKindLabel}.`,
+          ),
+        );
       }
 
       const importedActivityId = data.activity?.id;
@@ -1488,15 +1611,15 @@ function AddActivityPage({ session }: AddActivityPageProps) {
           : '';
       const importMessage =
         data.activity?.pfp_type === 'Voyager' && distanceMadeGood
-          ? `Imported ${data.activity?.name ?? 'activity'} with ${distanceMadeGood} made good.${imageMessage}`
-          : `Imported ${data.activity?.name ?? 'activity'}.${imageMessage}`;
+          ? `Imported ${data.activity?.name ?? importKindLabel} with ${distanceMadeGood} made good.${imageMessage}`
+          : `Imported ${data.activity?.name ?? importKindLabel}.${imageMessage}`;
 
       setStatus(importMessage);
     } catch (importError) {
       setError(
         importError instanceof Error
           ? importError.message
-          : 'Could not import Strava activity.',
+          : `Could not import Strava ${importKindLabel}.`,
       );
     } finally {
       setIsImportingActivity(false);
@@ -1527,7 +1650,12 @@ function AddActivityPage({ session }: AddActivityPageProps) {
       );
 
       if (functionError) {
-        throw functionError;
+        throw new Error(
+          await getFunctionErrorMessage(
+            functionError,
+            'Could not start Strava authorization.',
+          ),
+        );
       }
 
       if (!data?.authorizationUrl) {
@@ -1559,14 +1687,14 @@ function AddActivityPage({ session }: AddActivityPageProps) {
           <p className="eyebrow">Project Far Point Admin</p>
           <h1>Add Activity to Project Far Point</h1>
           <p className="activity-admin-copy">
-            Connect Strava, choose one completed activity, and import its
-            geometry for display on the globe.
+            Connect Strava, choose one completed activity or planned route, and
+            import its geometry for display on the globe.
           </p>
 
           {stravaStatus === 'connected' && (
             <p className="activity-success">
-              Strava is connected. The next step is listing your activities for
-              import.
+              Strava is connected. The next step is listing your activities or
+              routes for import.
             </p>
           )}
 
@@ -1580,38 +1708,108 @@ function AddActivityPage({ session }: AddActivityPageProps) {
           </button>
 
           <div className="activity-import-panel">
+            <div className="activity-import-kind" aria-label="Import source">
+              <button
+                className={
+                  importKind === 'activity'
+                    ? 'activity-import-kind-option activity-import-kind-option-active'
+                    : 'activity-import-kind-option'
+                }
+                type="button"
+                onClick={() => handleImportKindChange('activity')}
+              >
+                Activities
+              </button>
+              <button
+                className={
+                  importKind === 'route'
+                    ? 'activity-import-kind-option activity-import-kind-option-active'
+                    : 'activity-import-kind-option'
+                }
+                type="button"
+                onClick={() => handleImportKindChange('route')}
+              >
+                Routes
+              </button>
+            </div>
+
             <button
               className="activity-secondary-button"
               type="button"
-              onClick={handleLoadActivities}
-              disabled={isLoadingActivities || !isProjectOwner(session)}
+              onClick={handleLoadStravaItems}
+              disabled={isLoadingItems || !isProjectOwner(session)}
             >
-              {isLoadingActivities ? 'Loading activities...' : 'Load Strava activities'}
+              {isLoadingItems
+                ? `Loading ${importKindLabelPlural}...`
+                : `Load Strava ${importKindLabelPlural}`}
             </button>
 
-            {activities.length > 0 && (
+            {importKind === 'route' && (
+              <label className="manual-route-field">
+                <span>Route URL or ID</span>
+                <input
+                  value={manualRouteReference}
+                  onChange={(event) => setManualRouteReference(event.target.value)}
+                  placeholder="https://www.strava.com/routes/3434650877561151628"
+                />
+              </label>
+            )}
+
+            {canShowImportForm && (
               <>
-                <div className="activity-list" role="listbox" aria-label="Strava activities">
-                  {activities.map((activity) => (
-                    <button
-                      className={
-                        activity.id === selectedActivityId
-                          ? 'activity-option activity-option-selected'
-                          : 'activity-option'
-                      }
-                      type="button"
-                      key={activity.id}
-                      onClick={() => setSelectedActivityId(activity.id)}
-                    >
-                      <span>{activity.name}</span>
-                      <small>
-                        {new Date(activity.start_date).toLocaleDateString()} ·{' '}
-                        {(activity.distance / 1000).toFixed(2)} km ·{' '}
-                        {activity.sport_type}
-                      </small>
-                    </button>
-                  ))}
-                </div>
+                {((importKind === 'activity' && activities.length > 0) ||
+                  (importKind === 'route' && routes.length > 0)) && (
+                  <div
+                    className="activity-list"
+                    role="listbox"
+                    aria-label={`Strava ${importKindLabelPlural}`}
+                  >
+                    {importKind === 'activity'
+                      ? activities.map((activity) => (
+                          <button
+                            className={
+                              activity.id === selectedActivityId
+                                ? 'activity-option activity-option-selected'
+                                : 'activity-option'
+                            }
+                            type="button"
+                            key={activity.id}
+                            onClick={() => setSelectedActivityId(activity.id)}
+                          >
+                            <span>{activity.name}</span>
+                            <small>
+                              {new Date(activity.start_date).toLocaleDateString()} ·{' '}
+                              {(activity.distance / 1000).toFixed(2)} km ·{' '}
+                              {activity.sport_type}
+                            </small>
+                          </button>
+                        ))
+                      : routes.map((route) => (
+                          <button
+                            className={
+                              route.id === selectedRouteId && !manualRouteId
+                                ? 'activity-option activity-option-selected'
+                                : 'activity-option'
+                            }
+                            type="button"
+                            key={route.id}
+                            onClick={() => {
+                              setManualRouteReference('');
+                              setSelectedRouteId(route.id);
+                            }}
+                          >
+                            <span>{route.name}</span>
+                            <small>
+                              {(route.distance / 1000).toFixed(2)} km
+                              {route.elevation_gain !== null &&
+                                ` · ${Math.round(route.elevation_gain).toLocaleString()} m gain`}
+                              {route.updated_at &&
+                                ` · Updated ${new Date(route.updated_at).toLocaleDateString()}`}
+                            </small>
+                          </button>
+                        ))}
+                  </div>
+                )}
 
                 <div className="activity-metadata-form">
                   <label>
@@ -1637,61 +1835,11 @@ function AddActivityPage({ session }: AddActivityPageProps) {
                   </label>
 
                   <label>
-                    <span>City</span>
+                    <span>Started at</span>
                     <input
-                      name="city"
-                      value={activityMetadata.city}
-                      onChange={handleMetadataChange}
-                    />
-                  </label>
-
-                  <label>
-                    <span>State</span>
-                    <input
-                      name="state"
-                      value={activityMetadata.state}
-                      onChange={handleMetadataChange}
-                    />
-                  </label>
-
-                  <label>
-                    <span>Province</span>
-                    <input
-                      name="province"
-                      value={activityMetadata.province}
-                      onChange={handleMetadataChange}
-                    />
-                  </label>
-
-                  <label>
-                    <span>Country</span>
-                    <input
-                      name="country"
-                      value={activityMetadata.country}
-                      onChange={handleMetadataChange}
-                    />
-                  </label>
-
-                  <label>
-                    <span>Corrected distance (km)</span>
-                    <input
-                      name="correctedDistance"
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={activityMetadata.correctedDistance}
-                      onChange={handleMetadataChange}
-                    />
-                  </label>
-
-                  <label>
-                    <span>Distance made good (km)</span>
-                    <input
-                      name="distanceMadeGood"
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={activityMetadata.distanceMadeGood}
+                      name="startedAt"
+                      type="datetime-local"
+                      value={activityMetadata.startedAt}
                       onChange={handleMetadataChange}
                     />
                   </label>
@@ -1795,9 +1943,15 @@ function AddActivityPage({ session }: AddActivityPageProps) {
                   className="strava-connect-button"
                   type="button"
                   onClick={handleImportActivity}
-                  disabled={isImportingActivity || !selectedActivityId}
+                  disabled={
+                    isImportingActivity ||
+                    (importKind === 'activity' && !selectedActivityId) ||
+                    (importKind === 'route' && !routeIdToImport)
+                  }
                 >
-                  {isImportingActivity ? 'Importing...' : 'Import selected activity'}
+                  {isImportingActivity
+                    ? 'Importing...'
+                    : `Import selected ${importKindLabel}`}
                 </button>
               </>
             )}
@@ -1806,7 +1960,7 @@ function AddActivityPage({ session }: AddActivityPageProps) {
           {!isProjectOwner(session) && (
             <p className="activity-error">
               Sign in as the Project Far Point owner to import Strava
-              activities.
+              activities or routes.
             </p>
           )}
           {status && <p className="activity-status">{status}</p>}
