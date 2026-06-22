@@ -45,7 +45,7 @@ Deno.serve(async (request) => {
     return Response.json(
       {
         routes: routes.map((route: Record<string, unknown>) => ({
-          id: String(route.id),
+          id: typeof route.id_str === 'string' ? route.id_str : String(route.id),
           name: route.name,
           distance: route.distance,
           elevation_gain: route.elevation_gain,

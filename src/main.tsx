@@ -1,4 +1,4 @@
-import { StrictMode, useCallback, useEffect, useRef, useState } from 'react';
+import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   CSSProperties,
   ChangeEvent,
@@ -35,8 +35,11 @@ type ProjectActivity = {
   state: string | null;
   province: string | null;
   country: string | null;
+  continent: string | null;
   corrected_distance: number | string | null;
   distance_made_good: number | string | null;
+  strava_type: 'Activity' | 'Route' | null;
+  strava_url: string | null;
   text_description: string | null;
   geometry_simplified_medium: {
     type: 'LineString';
@@ -60,8 +63,11 @@ type SelectedProjectActivity = Pick<
   | 'state'
   | 'province'
   | 'country'
+  | 'continent'
   | 'corrected_distance'
   | 'distance_made_good'
+  | 'strava_type'
+  | 'strava_url'
   | 'text_description'
 >;
 
@@ -117,6 +123,17 @@ type ActivityImageInput = {
   caption: string;
   file: File | null;
 };
+
+type ProjectPathFilter = 'Voyager' | 'Far Point Trail' | '';
+type SearchSortField = 'date' | 'distance' | 'name' | 'location';
+type SearchSortDirection = 'asc' | 'desc';
+
+type SearchPanelProps = {
+  onActivitySelect: (activity: ProjectActivity) => void;
+};
+
+const projectActivitySelectColumns =
+  'id,name,sport_type,started_at,pfp_type,trail_name,city,state,province,country,continent,corrected_distance,distance_made_good,strava_type,strava_url,text_description,geometry_simplified_medium,geometry_geojson';
 
 const voyagerStart: LatLon = {
   latitude: -42.880468,
@@ -473,7 +490,7 @@ function formatActivityDateTime(value: string | null) {
 }
 
 const videoShortcodeOrYouTubeUrlPattern =
-  /\{(Video|Image|ImageCarousel)\s+([^{}]+)\}|https?:\/\/(?:www\.|m\.)?(?:youtube\.com|youtu\.be)\/[^\s<>"']+/gi;
+  /\{(Video|Image|ImageCarousel|ExternalImage)\s+([^{}]+)\}|https?:\/\/(?:www\.|m\.)?(?:youtube\.com|youtu\.be)\/[^\s<>"']+/gi;
 const quotedAttributePattern = /(\w+)="([^"]*)"/g;
 const trailingUrlPunctuationPattern = /[),.;:!?]+$/;
 const imageNamePattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
@@ -656,14 +673,27 @@ async function playOpeningGlobeAnimation(view: SceneView) {
 }
 
 type GlobeViewProps = {
+  session: Session | null;
   selectedActivityId: string | null;
+  focusActivityId: string | null;
+  focusActivityKey: number;
   onActivitySelect: (activity: SelectedProjectActivity) => void;
 };
 
-function GlobeView({ selectedActivityId, onActivitySelect }: GlobeViewProps) {
+function GlobeView({
+  session,
+  selectedActivityId,
+  focusActivityId,
+  focusActivityKey,
+  onActivitySelect,
+}: GlobeViewProps) {
   const sceneNode = useRef<HTMLDivElement | null>(null);
+  const viewRef = useRef<SceneView | null>(null);
   const importedActivityGraphics = useRef(new globalThis.Map<string, Graphic>());
   const selectedActivityGraphic = useRef<Graphic | null>(null);
+  const [isGeneratingTestActivity, setIsGeneratingTestActivity] = useState(false);
+  const [testGeneratorStatus, setTestGeneratorStatus] = useState('');
+  const [testGeneratorError, setTestGeneratorError] = useState('');
 
   useEffect(() => {
     const previousGraphic = selectedActivityGraphic.current;
@@ -689,6 +719,46 @@ function GlobeView({ selectedActivityId, onActivitySelect }: GlobeViewProps) {
       selectedActivityGraphic.current = nextGraphic;
     }
   }, [selectedActivityId]);
+
+  useEffect(() => {
+    if (!focusActivityId || focusActivityKey === 0) {
+      return;
+    }
+
+    const targetActivityId = focusActivityId;
+    let retryCount = 0;
+    let retryTimeout: number | null = null;
+
+    function focusActivity() {
+      const view = viewRef.current;
+      const graphic = importedActivityGraphics.current.get(targetActivityId);
+      const extent = graphic?.geometry?.extent;
+
+      if (!view || !extent) {
+        if (retryCount < 12) {
+          retryCount += 1;
+          retryTimeout = window.setTimeout(focusActivity, 250);
+        }
+
+        return;
+      }
+
+      view.goTo(extent.expand(1.35), {
+        animate: true,
+        duration: 900,
+      }).catch(() => {
+        // The view may be interrupted by a user pan/zoom.
+      });
+    }
+
+    focusActivity();
+
+    return () => {
+      if (retryTimeout) {
+        window.clearTimeout(retryTimeout);
+      }
+    };
+  }, [focusActivityId, focusActivityKey]);
 
   useEffect(() => {
     if (!sceneNode.current) {
@@ -893,12 +963,50 @@ function GlobeView({ selectedActivityId, onActivitySelect }: GlobeViewProps) {
     voyagerRouteLayer.add(calgaryLabel);
     map.add(voyagerRouteLayer);
 
+    function addProjectActivityGraphic(projectActivity: ProjectActivity) {
+      const paths = createActivityPaths(projectActivity);
+
+      if (!paths.length) {
+        return null;
+      }
+
+      if (!importedActivitiesLayer) {
+        importedActivitiesLayer = new GraphicsLayer({
+          title: 'Imported activities',
+          elevationInfo: {
+            mode: 'on-the-ground',
+          },
+        });
+        map.add(importedActivitiesLayer);
+      }
+
+      const activityGraphic = new Graphic({
+        geometry: {
+          type: 'polyline',
+          paths,
+          spatialReference: {
+            wkid: 4326,
+          },
+        },
+        symbol: createActivityLineSymbol(projectActivity),
+        attributes: {
+          activityId: projectActivity.id,
+          name: projectActivity.name,
+          sport_type: projectActivity.sport_type,
+          activity: projectActivity,
+        },
+      });
+
+      importedActivityGraphics.current.set(projectActivity.id, activityGraphic);
+      importedActivitiesLayer.add(activityGraphic);
+
+      return activityGraphic;
+    }
+
     if (supabase) {
       supabase
         .from('project_activities')
-        .select(
-          'id,name,sport_type,started_at,pfp_type,trail_name,city,state,province,country,corrected_distance,distance_made_good,text_description,geometry_simplified_medium,geometry_geojson',
-        )
+        .select(projectActivitySelectColumns)
         .not('geometry_geojson', 'is', null)
         .then(({ data, error }) => {
           if (isDestroyed || error || !data?.length) {
@@ -912,34 +1020,7 @@ function GlobeView({ selectedActivityId, onActivitySelect }: GlobeViewProps) {
             },
           });
 
-          data.forEach((activity) => {
-            const projectActivity = activity as ProjectActivity;
-            const paths = createActivityPaths(projectActivity);
-
-            if (!paths.length) {
-              return;
-            }
-
-            const activityGraphic = new Graphic({
-              geometry: {
-                type: 'polyline',
-                paths,
-                spatialReference: {
-                  wkid: 4326,
-                },
-              },
-              symbol: createActivityLineSymbol(projectActivity),
-              attributes: {
-                activityId: projectActivity.id,
-                name: projectActivity.name,
-                sport_type: projectActivity.sport_type,
-                activity: projectActivity,
-              },
-            });
-
-            importedActivityGraphics.current.set(projectActivity.id, activityGraphic);
-            importedActivitiesLayer?.add(activityGraphic);
-          });
+          data.forEach((activity) => addProjectActivityGraphic(activity as ProjectActivity));
 
           map.add(importedActivitiesLayer);
         });
@@ -970,6 +1051,7 @@ function GlobeView({ selectedActivityId, onActivitySelect }: GlobeViewProps) {
         components: ['compass'],
       },
     });
+    viewRef.current = view;
     setBasemapLabelsVisible(map, true);
     view.when(() => {
       if (isDestroyed) {
@@ -1020,17 +1102,103 @@ function GlobeView({ selectedActivityId, onActivitySelect }: GlobeViewProps) {
       selectedActivityGraphic.current = graphic;
       onActivitySelect(activity);
     });
+    const testActivityButton = document.createElement('button');
+
+    testActivityButton.className = 'map-test-activity-button';
+    testActivityButton.type = 'button';
+    testActivityButton.textContent = 'Generate Test Activity';
+    testActivityButton.addEventListener('click', async () => {
+      if (!supabase || !isProjectOwner(session)) {
+        return;
+      }
+
+      testActivityButton.disabled = true;
+      testActivityButton.textContent = 'Generating...';
+      setTestGeneratorStatus('');
+      setTestGeneratorError('');
+      setIsGeneratingTestActivity(true);
+
+      try {
+        const center = view.center;
+        const longitude = center?.longitude;
+        const latitude = center?.latitude;
+
+        if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+          throw new Error('Could not read the current map center.');
+        }
+
+        const { data, error } = await supabase.functions.invoke('generate-test-activity', {
+          body: {
+            latitude,
+            longitude,
+          },
+        });
+
+        if (error) {
+          throw new Error(
+            await getFunctionErrorMessage(error, 'Could not generate a test activity.'),
+          );
+        }
+
+        const projectActivity = data.activity as ProjectActivity | undefined;
+
+        if (!projectActivity) {
+          throw new Error('The generated activity was not returned.');
+        }
+
+        const graphic = addProjectActivityGraphic(projectActivity);
+
+        if (graphic) {
+          if (selectedActivityGraphic.current) {
+            selectedActivityGraphic.current.symbol = createActivityLineSymbol(
+              selectedActivityGraphic.current.attributes.activity as ProjectActivity,
+            );
+          }
+
+          graphic.symbol = createActivityLineSymbol(projectActivity, true);
+          selectedActivityGraphic.current = graphic;
+        }
+
+        onActivitySelect(projectActivity);
+        setTestGeneratorStatus(`Generated ${projectActivity.name}.`);
+      } catch (error) {
+        setTestGeneratorError(
+          error instanceof Error ? error.message : 'Could not generate a test activity.',
+        );
+      } finally {
+        testActivityButton.disabled = false;
+        testActivityButton.textContent = 'Generate Test Activity';
+        setIsGeneratingTestActivity(false);
+      }
+    });
+
+    if (isProjectOwner(session)) {
+      view.ui.add(testActivityButton, 'top-right');
+    }
 
     return () => {
       isDestroyed = true;
       importedActivityGraphics.current.clear();
       selectedActivityGraphic.current = null;
+      viewRef.current = null;
       clickHandle.remove();
+      testActivityButton.remove();
       view.destroy();
     };
-  }, [onActivitySelect]);
+  }, [onActivitySelect, session]);
 
-  return <div className="globe-view" ref={sceneNode} aria-label="3D globe" />;
+  return (
+    <div className="globe-view-shell">
+      <div className="globe-view" ref={sceneNode} aria-label="3D globe" />
+      {isProjectOwner(session) && (
+        <div className="map-test-activity-status" aria-live="polite">
+          {isGeneratingTestActivity && <p>Generating test activity...</p>}
+          {testGeneratorStatus && <p>{testGeneratorStatus}</p>}
+          {testGeneratorError && <p className="map-test-activity-error">{testGeneratorError}</p>}
+        </div>
+      )}
+    </div>
+  );
 }
 
 type AuthMode = 'signIn' | 'signUp' | 'reset' | 'updatePassword';
@@ -1978,6 +2146,7 @@ type ActivityStoryProps = {
 };
 
 type MobileMode = 'project' | 'progress' | 'search' | 'donate';
+type DesktopContentTab = 'story' | 'search';
 
 type ActivityImageCarouselProps = {
   images: ProjectActivityImage[];
@@ -2115,6 +2284,19 @@ function renderActivityImageFigure(
   );
 }
 
+function renderExternalActivityImageFigure(
+  url: string,
+  key: string,
+  caption?: string,
+) {
+  return (
+    <figure className="route-story-image" key={key}>
+      <img src={url} alt={caption || 'Generated test activity'} loading="lazy" />
+      {caption && <figcaption>{caption}</figcaption>}
+    </figure>
+  );
+}
+
 function renderActivityImageCarousel(
   images: ProjectActivityImage[],
   key: string,
@@ -2180,6 +2362,18 @@ function renderActivityParagraph(
         `carousel-${paragraphIndex}-${matchIndex}`,
         onOpenImage,
       );
+    } else if (shortcodeType === 'ExternalImage' && shortcodeAttributes) {
+      const imageUrl = shortcodeAttributes.url?.trim();
+
+      if (!imageUrl) {
+        continue;
+      }
+
+      renderedShortcode = renderExternalActivityImageFigure(
+        imageUrl,
+        `external-image-${paragraphIndex}-${matchIndex}`,
+        shortcodeAttributes.caption,
+      );
     } else {
       const rawUrl = shortcodeAttributes?.url ?? rawMatch;
       const { url } = shortcodeAttributes
@@ -2241,6 +2435,9 @@ function renderActivityParagraph(
 function ActivityStory({ activity, onBack, isArriving = false }: ActivityStoryProps) {
   const [activityImages, setActivityImages] = useState<ProjectActivityImage[]>([]);
   const [activeImage, setActiveImage] = useState<ProjectActivityImage | null>(null);
+  const openActivityImage = useCallback((image: ProjectActivityImage) => {
+    setActiveImage(image);
+  }, []);
   const description = activity.text_description?.trim();
   const paragraphs = description
     ? description.split(/\n{2,}/).map((paragraph) => paragraph.trim())
@@ -2248,6 +2445,9 @@ function ActivityStory({ activity, onBack, isArriving = false }: ActivityStoryPr
   const correctedDistance = formatKilometers(activity.corrected_distance);
   const distanceMadeGood = formatKilometers(activity.distance_made_good);
   const activityDateTime = formatActivityDateTime(activity.started_at);
+  const stravaLinkLabel = activity.strava_type
+    ? `Strava ${activity.strava_type}`
+    : 'Strava';
   const activityRouteClass =
     activity.pfp_type === 'Far Point Trail'
       ? 'journey-far-point'
@@ -2309,10 +2509,20 @@ function ActivityStory({ activity, onBack, isArriving = false }: ActivityStoryPr
         {activityDateTime && <span>{activityDateTime}</span>}
         {correctedDistance && <span>Distance: {correctedDistance}</span>}
         {distanceMadeGood && <span>Made good: {distanceMadeGood}</span>}
+        {activity.strava_url && (
+          <a
+            className="route-story-strava-link"
+            href={activity.strava_url}
+            target="_blank"
+            rel="noreferrer noopener"
+          >
+            {stravaLinkLabel}
+          </a>
+        )}
       </div>
       <div className="route-story-copy">
         {paragraphs.flatMap((paragraph, index) =>
-          renderActivityParagraph(paragraph, index, activityImages, setActiveImage),
+          renderActivityParagraph(paragraph, index, activityImages, openActivityImage),
         )}
       </div>
       {activeImage && (
@@ -2400,11 +2610,481 @@ function CharityPanel() {
   );
 }
 
-function SearchPanel() {
+function getActivityDistanceValue(activity: ProjectActivity) {
+  const value = Number(activity.corrected_distance);
+
+  return Number.isFinite(value) ? value : 0;
+}
+
+function getActivityDateValue(activity: ProjectActivity) {
+  if (!activity.started_at) {
+    return 0;
+  }
+
+  const value = new Date(activity.started_at).getTime();
+
+  return Number.isNaN(value) ? 0 : value;
+}
+
+function getActivityDisplayName(activity: ProjectActivity) {
+  return activity.trail_name || activity.name;
+}
+
+function getActivityLocationLabel(activity: ProjectActivity) {
+  return [
+    activity.city,
+    activity.province ?? activity.state,
+    activity.country,
+    activity.continent,
+  ]
+    .filter(Boolean)
+    .join(', ');
+}
+
+function uniqueSorted(values: Array<string | null | undefined>) {
+  return Array.from(
+    new Set(values.filter((value): value is string => Boolean(value?.trim()))),
+  ).sort((left, right) => left.localeCompare(right));
+}
+
+function SearchPanel({ onActivitySelect }: SearchPanelProps) {
+  const [activities, setActivities] = useState<ProjectActivity[]>([]);
+  const [projectPath, setProjectPath] = useState<ProjectPathFilter>('');
+  const [nameQuery, setNameQuery] = useState('');
+  const [continent, setContinent] = useState('');
+  const [country, setCountry] = useState('');
+  const [region, setRegion] = useState('');
+  const [city, setCity] = useState('');
+  const [keywordQuery, setKeywordQuery] = useState('');
+  const [sortField, setSortField] = useState<SearchSortField>('date');
+  const [sortDirection, setSortDirection] = useState<SearchSortDirection>('desc');
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    if (!supabase) {
+      return;
+    }
+
+    setIsLoading(true);
+    setError('');
+
+    async function loadSearchActivities() {
+      try {
+        if (!supabase) {
+          return;
+        }
+
+        const { data, error } = await supabase
+          .from('project_activities')
+          .select(projectActivitySelectColumns)
+          .not('geometry_geojson', 'is', null);
+
+        if (isCancelled) {
+          return;
+        }
+
+        if (error) {
+          setError('Could not load activities for search.');
+          setActivities([]);
+          return;
+        }
+
+        setActivities((data ?? []) as ProjectActivity[]);
+      } catch {
+        if (!isCancelled) {
+          setError('Could not load activities for search.');
+          setActivities([]);
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsLoading(false);
+        }
+      }
+    }
+
+    loadSearchActivities();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
+
+  const pathActivities = useMemo(
+    () =>
+      projectPath
+        ? activities.filter((activity) => activity.pfp_type === projectPath)
+        : [],
+    [activities, projectPath],
+  );
+  const availableNames = useMemo(
+    () => uniqueSorted(pathActivities.flatMap((activity) => [activity.name, activity.trail_name])),
+    [pathActivities],
+  );
+  const availableContinents = useMemo(
+    () => uniqueSorted(pathActivities.map((activity) => activity.continent)),
+    [pathActivities],
+  );
+  const continentActivities = useMemo(
+    () =>
+      continent
+        ? pathActivities.filter((activity) => activity.continent === continent)
+        : pathActivities,
+    [continent, pathActivities],
+  );
+  const availableCountries = useMemo(
+    () => uniqueSorted(continentActivities.map((activity) => activity.country)),
+    [continentActivities],
+  );
+  const countryActivities = useMemo(
+    () =>
+      country
+        ? continentActivities.filter((activity) => activity.country === country)
+        : continentActivities,
+    [continentActivities, country],
+  );
+  const regionField = country === 'Canada' ? 'province' : 'state';
+  const regionLabel = country === 'Canada' ? 'Province' : 'State';
+  const canFilterRegion = country === 'Canada' || country === 'United States';
+  const availableRegions = useMemo(
+    () =>
+      canFilterRegion
+        ? uniqueSorted(countryActivities.map((activity) => activity[regionField]))
+        : [],
+    [canFilterRegion, countryActivities, regionField],
+  );
+  const regionActivities = useMemo(
+    () =>
+      canFilterRegion && region
+        ? countryActivities.filter((activity) => activity[regionField] === region)
+        : countryActivities,
+    [canFilterRegion, countryActivities, region, regionField],
+  );
+  const availableCities = useMemo(
+    () => uniqueSorted(regionActivities.map((activity) => activity.city)),
+    [regionActivities],
+  );
+  const keywordTerms = useMemo(
+    () =>
+      keywordQuery
+        .split(',')
+        .map((keyword) => keyword.trim().toLowerCase())
+        .filter(Boolean),
+    [keywordQuery],
+  );
+  const filteredActivities = useMemo(() => {
+    if (!projectPath) {
+      return [];
+    }
+
+    const cleanNameQuery = nameQuery.trim().toLowerCase();
+
+    return pathActivities
+      .filter((activity) => {
+        if (cleanNameQuery) {
+          const searchableName = [activity.name, activity.trail_name]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase();
+
+          if (!searchableName.includes(cleanNameQuery)) {
+            return false;
+          }
+        }
+
+        if (continent && activity.continent !== continent) {
+          return false;
+        }
+
+        if (country && activity.country !== country) {
+          return false;
+        }
+
+        if (canFilterRegion && region && activity[regionField] !== region) {
+          return false;
+        }
+
+        if (city && activity.city !== city) {
+          return false;
+        }
+
+        if (keywordTerms.length > 0) {
+          const searchableText = [
+            activity.name,
+            activity.trail_name,
+            activity.text_description,
+            activity.city,
+            activity.state,
+            activity.province,
+            activity.country,
+            activity.continent,
+            activity.sport_type,
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase();
+
+          return keywordTerms.some((keyword) => searchableText.includes(keyword));
+        }
+
+        return true;
+      })
+      .sort((left, right) => {
+        let comparison = 0;
+
+        if (sortField === 'date') {
+          comparison = getActivityDateValue(left) - getActivityDateValue(right);
+        } else if (sortField === 'distance') {
+          comparison = getActivityDistanceValue(left) - getActivityDistanceValue(right);
+        } else if (sortField === 'name') {
+          comparison = getActivityDisplayName(left).localeCompare(getActivityDisplayName(right));
+        } else {
+          comparison = getActivityLocationLabel(left).localeCompare(getActivityLocationLabel(right));
+        }
+
+        return sortDirection === 'asc' ? comparison : -comparison;
+      });
+  }, [
+    canFilterRegion,
+    city,
+    continent,
+    country,
+    keywordTerms,
+    nameQuery,
+    pathActivities,
+    projectPath,
+    region,
+    regionField,
+    sortDirection,
+    sortField,
+  ]);
+
+  function handleProjectPathChange(nextProjectPath: Exclude<ProjectPathFilter, ''>) {
+    setProjectPath(nextProjectPath);
+    setContinent('');
+    setCountry('');
+    setRegion('');
+    setCity('');
+  }
+
+  function handleContinentChange(value: string) {
+    setContinent(value);
+    setCountry('');
+    setRegion('');
+    setCity('');
+  }
+
+  function handleCountryChange(value: string) {
+    setCountry(value);
+    setRegion('');
+    setCity('');
+  }
+
+  function handleRegionChange(value: string) {
+    setRegion(value);
+    setCity('');
+  }
+
+  function handleClearFilters() {
+    setNameQuery('');
+    setContinent('');
+    setCountry('');
+    setRegion('');
+    setCity('');
+    setKeywordQuery('');
+    setSortField('date');
+    setSortDirection('desc');
+  }
+
   return (
-    <section className="search-panel" aria-label="Search">
-      <p className="eyebrow">Search</p>
-      <h2>Search coming soon</h2>
+    <section className="search-panel" aria-label="Search activities">
+      <div className="search-panel-header">
+        <div>
+          <p className="eyebrow">Search</p>
+          <h2>Find an Activity</h2>
+        </div>
+        <button className="search-clear-button" type="button" onClick={handleClearFilters}>
+          Clear
+        </button>
+      </div>
+
+      <div className="search-path-toggle" aria-label="Project path">
+        <button
+          className={projectPath === 'Voyager' ? 'search-path-active' : ''}
+          type="button"
+          onClick={() => handleProjectPathChange('Voyager')}
+        >
+          Voyager
+        </button>
+        <button
+          className={projectPath === 'Far Point Trail' ? 'search-path-active' : ''}
+          type="button"
+          onClick={() => handleProjectPathChange('Far Point Trail')}
+        >
+          Far Point Trail
+        </button>
+      </div>
+
+      {!projectPath && (
+        <p className="search-empty-state">Choose Voyager or Far Point Trail to start searching.</p>
+      )}
+
+      {projectPath && (
+        <>
+          <div className="search-controls">
+            <label className="search-field search-field-wide">
+              <span>Activity name</span>
+              <input
+                value={nameQuery}
+                onChange={(event) => setNameQuery(event.target.value)}
+                list="activity-name-options"
+                placeholder="Start typing an activity name"
+              />
+              <datalist id="activity-name-options">
+                {availableNames.slice(0, 250).map((name) => (
+                  <option value={name} key={name} />
+                ))}
+              </datalist>
+            </label>
+
+            <label className="search-field">
+              <span>Continent</span>
+              <select
+                value={continent}
+                onChange={(event) => handleContinentChange(event.target.value)}
+              >
+                <option value="">Any continent</option>
+                {availableContinents.map((value) => (
+                  <option value={value} key={value}>
+                    {value}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="search-field">
+              <span>Country</span>
+              <select
+                value={country}
+                onChange={(event) => handleCountryChange(event.target.value)}
+              >
+                <option value="">Any country</option>
+                {availableCountries.map((value) => (
+                  <option value={value} key={value}>
+                    {value}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            {canFilterRegion && (
+              <label className="search-field">
+                <span>{regionLabel}</span>
+                <select
+                  value={region}
+                  onChange={(event) => handleRegionChange(event.target.value)}
+                >
+                  <option value="">
+                    Any {regionLabel.toLowerCase()}
+                  </option>
+                  {availableRegions.map((value) => (
+                    <option value={value} key={value}>
+                      {value}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+
+            <label className="search-field">
+              <span>City</span>
+              <select value={city} onChange={(event) => setCity(event.target.value)}>
+                <option value="">Any city</option>
+                {availableCities.map((value) => (
+                  <option value={value} key={value}>
+                    {value}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="search-field search-field-wide">
+              <span>Keywords</span>
+              <input
+                value={keywordQuery}
+                onChange={(event) => setKeywordQuery(event.target.value)}
+                placeholder="alpha, bravo, charlie"
+              />
+            </label>
+
+            <label className="search-field">
+              <span>Sort by</span>
+              <select
+                value={sortField}
+                onChange={(event) => setSortField(event.target.value as SearchSortField)}
+              >
+                <option value="date">Date</option>
+                <option value="distance">Distance</option>
+                <option value="name">Name</option>
+                <option value="location">Location</option>
+              </select>
+            </label>
+
+            <label className="search-field">
+              <span>Order</span>
+              <select
+                value={sortDirection}
+                onChange={(event) => setSortDirection(event.target.value as SearchSortDirection)}
+              >
+                <option value="desc">Descending</option>
+                <option value="asc">Ascending</option>
+              </select>
+            </label>
+          </div>
+
+          <div className="search-results-header">
+            <span>
+              {isLoading
+                ? 'Loading activities...'
+                : `${filteredActivities.length.toLocaleString()} result${
+                    filteredActivities.length === 1 ? '' : 's'
+                  }`}
+            </span>
+            {error && <span className="search-error">{error}</span>}
+          </div>
+
+          <div className="search-results" role="list">
+            {filteredActivities.slice(0, 150).map((activity) => {
+              const distance = formatKilometers(activity.corrected_distance);
+              const date = formatActivityDateTime(activity.started_at);
+              const location = getActivityLocationLabel(activity);
+
+              return (
+                <button
+                  className="search-result"
+                  type="button"
+                  role="listitem"
+                  key={activity.id}
+                  onClick={() => onActivitySelect(activity)}
+                >
+                  <span className="search-result-name">{getActivityDisplayName(activity)}</span>
+                  <span className="search-result-meta">
+                    {date && <span>{date}</span>}
+                    {distance && <span>{distance}</span>}
+                    {location && <span>{location}</span>}
+                  </span>
+                </button>
+              );
+            })}
+
+            {!isLoading && filteredActivities.length === 0 && (
+              <p className="search-empty-state">No activities match those filters.</p>
+            )}
+          </div>
+        </>
+      )}
     </section>
   );
 }
@@ -2423,6 +3103,10 @@ function App() {
   const [mobileMapHeight, setMobileMapHeight] = useState(48);
   const [mobileMapControlX, setMobileMapControlX] = useState(94);
   const [mobileMapOpacity, setMobileMapOpacity] = useState(1);
+  const [desktopContentTab, setDesktopContentTab] =
+    useState<DesktopContentTab>('story');
+  const [mapFocusActivityId, setMapFocusActivityId] = useState<string | null>(null);
+  const [mapFocusActivityKey, setMapFocusActivityKey] = useState(0);
   const [showLogoLightbox, setShowLogoLightbox] = useState(false);
   const logoUrl = `${import.meta.env.BASE_URL}ProjectFarPoint.png`;
 
@@ -2521,6 +3205,7 @@ function App() {
     setSelectedActivity(activity);
     setSelectedActivityAnimationKey((currentKey) => currentKey + 1);
     setMobileMode('project');
+    setDesktopContentTab('story');
     window.requestAnimationFrame(() => {
       if (window.matchMedia('(max-width: 980px)').matches) {
         storyPanelRef.current?.scrollIntoView({
@@ -2530,8 +3215,17 @@ function App() {
       }
     });
   }, []);
+  const handleSearchActivitySelect = useCallback((activity: ProjectActivity) => {
+    setSelectedActivity(activity);
+    setSelectedActivityAnimationKey((currentKey) => currentKey + 1);
+    setMapFocusActivityId(activity.id);
+    setMapFocusActivityKey((currentKey) => currentKey + 1);
+  }, []);
   const handleBackToIntro = useCallback(() => {
     setSelectedActivity(null);
+  }, []);
+  const handleDesktopContentTabChange = useCallback((nextTab: DesktopContentTab) => {
+    setDesktopContentTab(nextTab);
   }, []);
   const appStyle = {
     '--mobile-map-height': mobileMapHeight,
@@ -2638,7 +3332,27 @@ function App() {
           </div>
           <AuthPanel session={session} />
         </header>
-        <article className="intro">
+        <div className="desktop-content-tabs" role="tablist" aria-label="Project content">
+          <button
+            className={desktopContentTab === 'story' ? 'desktop-content-tab-active' : ''}
+            type="button"
+            role="tab"
+            aria-selected={desktopContentTab === 'story'}
+            onClick={() => handleDesktopContentTabChange('story')}
+          >
+            Story
+          </button>
+          <button
+            className={desktopContentTab === 'search' ? 'desktop-content-tab-active' : ''}
+            type="button"
+            role="tab"
+            aria-selected={desktopContentTab === 'search'}
+            onClick={() => handleDesktopContentTabChange('search')}
+          >
+            Search
+          </button>
+        </div>
+        <article className={`intro${desktopContentTab === 'search' ? ' intro-hidden-desktop' : ''}`}>
           {selectedActivity ? (
             <ActivityStory
               key={`${selectedActivity.id}-${selectedActivityAnimationKey}`}
@@ -2658,24 +3372,22 @@ function App() {
                 the globe: <strong className="journey-voyager">Voyager</strong>{' '}
                 and the{' '}
                 <strong className="journey-far-point">Far Point Trail</strong>.
-                Those imagined routes pass through 32 countries that together
-                are home to nearly 58% of the world's population.
+
               </p>
               <p>
                 Voyager begins high in the remote Southern Alps of New Zealand and
                 travels, <i>in imagination</i>, 20,038 kilometers through Australia, Asia, over the summit of Mount Everest,
                 and through Europe to its destination: the Cathedral of St. James in
                 Santiago de Compostela, Spain - the famed terminus of the Camino
-                de Santiago and the exact opposite side of the Earth (antipode) of its starting point.
+                de Santiago and the exact opposite side of the Earth - the antipode of its starting point.
               </p>
               <p>
                 The reality behind Voyager is far less direct, but no less
-                meaningful. Every local walk, winter outing, river float, and day
-                hike contributes to the journey. With a focus on autumn, winter,
-                and spring adventures near my home in Calgary, Alberta, Voyager
-                will also chronicle travels to all fifty U.S. states, Canada's
-                thirteen provinces and territories, and walking explorations of
-                many of the world's great cities.
+                meaningful. The intention of Voyager is to visit 100 parks located throughout 
+                the world and walk, kayak, raft,ski or snowshoe 100 kilometers in each. The parks are the places where the virtual
+                 Voyager's path intersects with the real world, and the activities are the steps that move it forward. With each new
+                  adventure, Voyager's progress path will grow on the globe, bringing it closer to its destination
+                   and creating a rich tapestry of stories, photos, and videos along the way.
               </p>
               <p>
                 The second half of the project, the Far Point Trail, is Voyager's
@@ -2702,6 +3414,9 @@ function App() {
             </div>
           )}
         </article>
+        <div className={`desktop-search-content${desktopContentTab === 'story' ? ' desktop-search-content-hidden' : ''}`}>
+          <SearchPanel onActivitySelect={handleSearchActivitySelect} />
+        </div>
         <div className="mobile-mode-content mobile-progress-content">
           <JourneySummary />
         </div>
@@ -2709,7 +3424,7 @@ function App() {
           <CharityPanel />
         </div>
         <div className="mobile-mode-content mobile-search-content">
-          <SearchPanel />
+          <SearchPanel onActivitySelect={handleSearchActivitySelect} />
         </div>
       </section>
       <section className="experience-panel" aria-label="Project progress and map">
@@ -2730,7 +3445,10 @@ function App() {
             <span aria-hidden="true">Drag Me!</span>
           </button>
           <GlobeView
+            session={session}
             selectedActivityId={selectedActivity?.id ?? null}
+            focusActivityId={mapFocusActivityId}
+            focusActivityKey={mapFocusActivityKey}
             onActivitySelect={handleActivitySelect}
           />
         </div>
