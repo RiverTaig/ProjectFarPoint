@@ -13,6 +13,8 @@ import Graphic from '@arcgis/core/Graphic.js';
 import GraphicsLayer from '@arcgis/core/layers/GraphicsLayer.js';
 import Map from '@arcgis/core/Map.js';
 import SceneView from '@arcgis/core/views/SceneView.js';
+import type { ResourceHandle } from '@arcgis/core/core/Handles.js';
+import type LayerView from '@arcgis/core/views/layers/LayerView.js';
 import type { Session } from '@supabase/supabase-js';
 import { supabase } from './supabaseClient';
 import './styles.css';
@@ -132,6 +134,14 @@ type SearchPanelProps = {
   onActivitySelect: (activity: ProjectActivity) => void;
 };
 
+type ProgressPath = 'Voyager' | 'Far Point Trail';
+
+type ProgressPosition = {
+  activity: ProjectActivity;
+  progressKilometers: number;
+  position: LatLon;
+};
+
 const projectActivitySelectColumns =
   'id,name,sport_type,started_at,pfp_type,trail_name,city,state,province,country,continent,corrected_distance,distance_made_good,strava_type,strava_url,text_description,geometry_simplified_medium,geometry_geojson';
 
@@ -156,8 +166,11 @@ const calgary: LatLon = {
 };
 
 const halfJourneyKilometers = 20038;
+const earthCircumferenceKilometers = halfJourneyKilometers * 2;
 const sampleProgressKilometers = 1000;
 const guideRouteWidth = 3.4;
+const progressMarkersVisibleWidthKilometers = 300;
+const progressLabelsVisibleWidthKilometers = 100;
 
 const voyagerAntipode: LatLon = {
   latitude: -voyagerStart.latitude,
@@ -319,6 +332,44 @@ function createFarPointProgressPath() {
   );
 }
 
+function getGreatCirclePosition(
+  startPoint: LatLon,
+  waypoint: LatLon,
+  distanceKilometers: number,
+) {
+  const start = toVector(startPoint);
+  const waypointVector = toVector(waypoint);
+  const direction = normalize([
+    waypointVector[0] - dot(waypointVector, start) * start[0],
+    waypointVector[1] - dot(waypointVector, start) * start[1],
+    waypointVector[2] - dot(waypointVector, start) * start[2],
+  ]);
+  const angle = Math.PI * (distanceKilometers / halfJourneyKilometers);
+
+  return toLatLon(greatCirclePoint(start, direction, angle));
+}
+
+function getProgressPosition(path: ProgressPath, distanceKilometers: number) {
+  const wrappedDistance =
+    ((distanceKilometers % earthCircumferenceKilometers) +
+      earthCircumferenceKilometers) %
+    earthCircumferenceKilometers;
+  const isPastFirstHalf = wrappedDistance > halfJourneyKilometers;
+  const segmentDistance = isPastFirstHalf
+    ? wrappedDistance - halfJourneyKilometers
+    : wrappedDistance;
+
+  if (path === 'Voyager') {
+    return isPastFirstHalf
+      ? getGreatCirclePosition(voyagerAntipode, everestAntipode, segmentDistance)
+      : getGreatCirclePosition(voyagerStart, everestSummit, segmentDistance);
+  }
+
+  return isPastFirstHalf
+    ? getGreatCirclePosition(voyagerStart, everestSummit, segmentDistance)
+    : getGreatCirclePosition(voyagerAntipode, everestAntipode, segmentDistance);
+}
+
 function createActivityPaths(activity: ProjectActivity) {
   const geometry = activity.geometry_geojson ?? activity.geometry_simplified_medium;
 
@@ -345,6 +396,171 @@ function createActivityLineSymbol(activity: ProjectActivity, isSelected = false)
     color: isSelected ? [255, 220, 70, 1] : getActivityLineColor(activity),
     width: isSelected ? 7 : 4,
   } as const;
+}
+
+function getKilometerValue(value: number | string | null) {
+  if (value === null || value === '') {
+    return 0;
+  }
+
+  const numberValue = typeof value === 'string' ? Number(value) : value;
+
+  return Number.isFinite(numberValue) ? Math.max(numberValue, 0) : 0;
+}
+
+function getActivityStartTime(activity: ProjectActivity) {
+  if (!activity.started_at) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const time = new Date(activity.started_at).getTime();
+
+  return Number.isNaN(time) ? Number.POSITIVE_INFINITY : time;
+}
+
+function createProgressPositions(activities: ProjectActivity[]) {
+  const positions: ProgressPosition[] = [];
+  const activitiesByPath = new globalThis.Map<ProgressPath, ProjectActivity[]>();
+
+  activities.forEach((activity) => {
+    if (activity.pfp_type !== 'Voyager' && activity.pfp_type !== 'Far Point Trail') {
+      return;
+    }
+
+    const pathActivities = activitiesByPath.get(activity.pfp_type) ?? [];
+    pathActivities.push(activity);
+    activitiesByPath.set(activity.pfp_type, pathActivities);
+  });
+
+  activitiesByPath.forEach((pathActivities, path) => {
+    let runningTotal = 0;
+
+    pathActivities
+      .sort((left, right) => {
+        const dateDifference = getActivityStartTime(left) - getActivityStartTime(right);
+
+        if (dateDifference !== 0) {
+          return dateDifference;
+        }
+
+        return left.id.localeCompare(right.id);
+      })
+      .forEach((activity) => {
+        runningTotal += getKilometerValue(activity.distance_made_good);
+        positions.push({
+          activity,
+          progressKilometers: runningTotal,
+          position: getProgressPosition(path, runningTotal),
+        });
+      });
+  });
+
+  return positions;
+}
+
+function createProgressMarkerSymbol(activity: ProjectActivity, isSelected = false) {
+  const isFarPoint = activity.pfp_type === 'Far Point Trail';
+  const fillColor = isSelected
+    ? '#ffdc46'
+    : isFarPoint
+      ? '#a6e031'
+      : '#33c6ff';
+  const haloColor = isFarPoint ? '#24340d' : '#082b3d';
+  const size = isSelected ? 30 : 24;
+  const pinSvg = `
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 44">
+      <path d="M16 42 10.6 27.6C5.2 25.5 2 20.7 2 15.4 2 7.8 8.3 2 16 2s14 5.8 14 13.4c0 5.3-3.2 10.1-8.6 12.2L16 42Z" fill="${fillColor}" stroke="#020611" stroke-width="3"/>
+      <circle cx="16" cy="15.5" r="6.1" fill="#fffef8" fill-opacity="0.92" stroke="${haloColor}" stroke-width="2"/>
+    </svg>
+  `.trim();
+
+  return {
+    type: 'picture-marker',
+    url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(pinSvg)}`,
+    width: size,
+    height: Math.round(size * 1.375),
+    yoffset: Math.round((size * 1.375) / 2),
+  } as const;
+}
+
+function createProgressLabelSymbol(activity: ProjectActivity) {
+  return {
+    type: 'text',
+    text: activity.trail_name || activity.name,
+    color: activity.pfp_type === 'Far Point Trail'
+      ? [219, 255, 127, 1]
+      : [155, 228, 255, 1],
+    haloColor: [2, 6, 17, 0.96],
+    haloSize: 1.4,
+    font: {
+      family: 'Inter, Arial, sans-serif',
+      size: 10.5,
+      weight: 'bold',
+    },
+    yoffset: 14,
+  } as const;
+}
+
+function getHaversineKilometers(start: LatLon, end: LatLon) {
+  const earthRadiusKilometers = 6371.0088;
+  const startLatitude = degreesToRadians(start.latitude);
+  const endLatitude = degreesToRadians(end.latitude);
+  const latitudeDelta = degreesToRadians(end.latitude - start.latitude);
+  const longitudeDelta = degreesToRadians(end.longitude - start.longitude);
+  const haversine =
+    Math.sin(latitudeDelta / 2) ** 2 +
+    Math.cos(startLatitude) *
+      Math.cos(endLatitude) *
+      Math.sin(longitudeDelta / 2) ** 2;
+
+  return (
+    2 *
+    earthRadiusKilometers *
+    Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine))
+  );
+}
+
+function getViewWidthKilometers(view: SceneView) {
+  if (!view.width || !view.height) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const centerY = view.height / 2;
+  const leftPoint = view.toMap({ x: 0, y: centerY });
+  const rightPoint = view.toMap({ x: view.width, y: centerY });
+
+  if (!leftPoint || !rightPoint) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const leftLatitude = leftPoint.latitude;
+  const leftLongitude = leftPoint.longitude;
+  const rightLatitude = rightPoint.latitude;
+  const rightLongitude = rightPoint.longitude;
+
+  if (
+    typeof leftLatitude !== 'number' ||
+    typeof leftLongitude !== 'number' ||
+    typeof rightLatitude !== 'number' ||
+    typeof rightLongitude !== 'number' ||
+    !Number.isFinite(leftLatitude) ||
+    !Number.isFinite(leftLongitude) ||
+    !Number.isFinite(rightLatitude) ||
+    !Number.isFinite(rightLongitude)
+  ) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  return getHaversineKilometers(
+    {
+      latitude: leftLatitude,
+      longitude: leftLongitude,
+    },
+    {
+      latitude: rightLatitude,
+      longitude: rightLongitude,
+    },
+  );
 }
 
 function formatDateTimeLocalInput(value?: string | null) {
@@ -677,6 +893,8 @@ type GlobeViewProps = {
   selectedActivityId: string | null;
   focusActivityId: string | null;
   focusActivityKey: number;
+  focusProgressActivityId: string | null;
+  focusProgressActivityKey: number;
   onActivitySelect: (activity: SelectedProjectActivity) => void;
 };
 
@@ -685,15 +903,22 @@ function GlobeView({
   selectedActivityId,
   focusActivityId,
   focusActivityKey,
+  focusProgressActivityId,
+  focusProgressActivityKey,
   onActivitySelect,
 }: GlobeViewProps) {
   const sceneNode = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<SceneView | null>(null);
   const importedActivityGraphics = useRef(new globalThis.Map<string, Graphic>());
+  const progressActivityGraphics = useRef(new globalThis.Map<string, Graphic>());
+  const focusedProgressLayerRef = useRef<GraphicsLayer | null>(null);
   const selectedActivityGraphic = useRef<Graphic | null>(null);
+  const selectedProgressGraphic = useRef<Graphic | null>(null);
+  const [isGlobeReady, setIsGlobeReady] = useState(false);
   const [isGeneratingTestActivity, setIsGeneratingTestActivity] = useState(false);
   const [testGeneratorStatus, setTestGeneratorStatus] = useState('');
   const [testGeneratorError, setTestGeneratorError] = useState('');
+  const loadingLogoUrl = `${import.meta.env.BASE_URL}ProjectFarPointLoader.png`;
 
   useEffect(() => {
     const previousGraphic = selectedActivityGraphic.current;
@@ -721,6 +946,31 @@ function GlobeView({
   }, [selectedActivityId]);
 
   useEffect(() => {
+    const previousProgressGraphic = selectedProgressGraphic.current;
+
+    if (previousProgressGraphic) {
+      previousProgressGraphic.symbol = createProgressMarkerSymbol(
+        previousProgressGraphic.attributes.activity as ProjectActivity,
+      );
+      selectedProgressGraphic.current = null;
+    }
+
+    if (!selectedActivityId) {
+      return;
+    }
+
+    const nextProgressGraphic = progressActivityGraphics.current.get(selectedActivityId);
+
+    if (nextProgressGraphic) {
+      nextProgressGraphic.symbol = createProgressMarkerSymbol(
+        nextProgressGraphic.attributes.activity as ProjectActivity,
+        true,
+      );
+      selectedProgressGraphic.current = nextProgressGraphic;
+    }
+  }, [selectedActivityId]);
+
+  useEffect(() => {
     if (!focusActivityId || focusActivityKey === 0) {
       return;
     }
@@ -743,6 +993,7 @@ function GlobeView({
         return;
       }
 
+      focusedProgressLayerRef.current?.removeAll();
       view.goTo(extent.expand(1.35), {
         animate: true,
         duration: 900,
@@ -761,12 +1012,86 @@ function GlobeView({
   }, [focusActivityId, focusActivityKey]);
 
   useEffect(() => {
+    if (!focusProgressActivityId || focusProgressActivityKey === 0) {
+      return;
+    }
+
+    const targetActivityId = focusProgressActivityId;
+    let retryCount = 0;
+    let retryTimeout: number | null = null;
+
+    function focusProgressPosition() {
+      const view = viewRef.current;
+      const graphic = progressActivityGraphics.current.get(targetActivityId);
+      const focusedProgressLayer = focusedProgressLayerRef.current;
+
+      if (!view || !graphic?.geometry || !focusedProgressLayer) {
+        if (retryCount < 12) {
+          retryCount += 1;
+          retryTimeout = window.setTimeout(focusProgressPosition, 250);
+        }
+
+        return;
+      }
+
+      const activity = graphic.attributes.activity as ProjectActivity;
+
+      focusedProgressLayer.removeAll();
+      focusedProgressLayer.add(
+        new Graphic({
+          geometry: graphic.geometry,
+          symbol: createProgressMarkerSymbol(activity, true),
+          attributes: {
+            activityId: activity.id,
+            activity,
+            isFocusedProgressPosition: true,
+          },
+        }),
+      );
+      focusedProgressLayer.add(
+        new Graphic({
+          geometry: graphic.geometry,
+          symbol: createProgressLabelSymbol(activity),
+          attributes: {
+            activityId: activity.id,
+            activity,
+            isFocusedProgressLabel: true,
+          },
+        }),
+      );
+      view.goTo(
+        {
+          target: graphic.geometry,
+          scale: 18000000,
+          tilt: 0,
+        },
+        {
+          animate: true,
+          duration: 1200,
+        },
+      ).catch(() => {
+        // The view may be interrupted by a user pan/zoom.
+      });
+    }
+
+    focusProgressPosition();
+
+    return () => {
+      if (retryTimeout) {
+        window.clearTimeout(retryTimeout);
+      }
+    };
+  }, [focusProgressActivityId, focusProgressActivityKey]);
+
+  useEffect(() => {
     if (!sceneNode.current) {
       return;
     }
 
+    setIsGlobeReady(false);
     let isDestroyed = false;
     let importedActivitiesLayer: GraphicsLayer | null = null;
+    const projectActivities = new globalThis.Map<string, ProjectActivity>();
 
     const map = new Map({
       basemap: 'hybrid',
@@ -778,6 +1103,27 @@ function GlobeView({
         mode: 'on-the-ground',
       },
     });
+    const progressMarkerLayer = new GraphicsLayer({
+      title: 'Progress positions',
+      visible: false,
+      elevationInfo: {
+        mode: 'on-the-ground',
+      },
+    });
+    const progressLabelLayer = new GraphicsLayer({
+      title: 'Progress position labels',
+      visible: false,
+      elevationInfo: {
+        mode: 'on-the-ground',
+      },
+    });
+    const focusedProgressLayer = new GraphicsLayer({
+      title: 'Focused progress position',
+      elevationInfo: {
+        mode: 'on-the-ground',
+      },
+    });
+    focusedProgressLayerRef.current = focusedProgressLayer;
     const voyagerRoute = new Graphic({
       geometry: {
         type: 'polyline',
@@ -962,6 +1308,73 @@ function GlobeView({
     voyagerRouteLayer.add(calgaryMarker);
     voyagerRouteLayer.add(calgaryLabel);
     map.add(voyagerRouteLayer);
+    map.add(progressMarkerLayer);
+    map.add(progressLabelLayer);
+    map.add(focusedProgressLayer);
+
+    function rebuildProgressGraphics() {
+      progressMarkerLayer.removeAll();
+      progressLabelLayer.removeAll();
+      progressActivityGraphics.current.clear();
+
+      createProgressPositions(Array.from(projectActivities.values())).forEach(
+        ({ activity, progressKilometers, position }) => {
+          const geometry = {
+            type: 'point',
+            longitude: position.longitude,
+            latitude: position.latitude,
+            spatialReference: {
+              wkid: 4326,
+            },
+          } as const;
+          const isSelected = activity.id === selectedActivityId;
+          const markerGraphic = new Graphic({
+            geometry,
+            symbol: createProgressMarkerSymbol(activity, isSelected),
+            attributes: {
+              activityId: activity.id,
+              name: activity.name,
+              progressKilometers,
+              activity,
+              isProgressPosition: true,
+            },
+          });
+          const labelGraphic = new Graphic({
+            geometry,
+            symbol: createProgressLabelSymbol(activity),
+            attributes: {
+              activityId: activity.id,
+              name: activity.name,
+              progressKilometers,
+              activity,
+              isProgressLabel: true,
+            },
+          });
+
+          progressActivityGraphics.current.set(activity.id, markerGraphic);
+          progressMarkerLayer.add(markerGraphic);
+          progressLabelLayer.add(labelGraphic);
+
+          if (isSelected) {
+            selectedProgressGraphic.current = markerGraphic;
+          }
+        },
+      );
+    }
+
+    function updateProgressLayerVisibility() {
+      const view = viewRef.current;
+
+      if (!view) {
+        return;
+      }
+
+      const widthKilometers = getViewWidthKilometers(view);
+      progressMarkerLayer.visible =
+        widthKilometers <= progressMarkersVisibleWidthKilometers;
+      progressLabelLayer.visible =
+        widthKilometers <= progressLabelsVisibleWidthKilometers;
+    }
 
     function addProjectActivityGraphic(projectActivity: ProjectActivity) {
       const paths = createActivityPaths(projectActivity);
@@ -999,6 +1412,7 @@ function GlobeView({
 
       importedActivityGraphics.current.set(projectActivity.id, activityGraphic);
       importedActivitiesLayer.add(activityGraphic);
+      projectActivities.set(projectActivity.id, projectActivity);
 
       return activityGraphic;
     }
@@ -1023,6 +1437,8 @@ function GlobeView({
           data.forEach((activity) => addProjectActivityGraphic(activity as ProjectActivity));
 
           map.add(importedActivitiesLayer);
+          rebuildProgressGraphics();
+          updateProgressLayerVisibility();
         });
     }
 
@@ -1053,23 +1469,160 @@ function GlobeView({
     });
     viewRef.current = view;
     setBasemapLabelsVisible(map, true);
+    const progressVisibilityHandle = view.watch('extent', updateProgressLayerVisibility);
+    const imageryLayerHandles: ResourceHandle[] = [];
+    let openingAnimationTimeout: number | null = null;
+    let initialImageryStableTimeout: number | null = null;
+    let initialImageryFallbackTimeout: number | null = null;
+    let hasStartedOpeningAnimation = false;
+    const startOpeningAnimation = () => {
+      if (isDestroyed || hasStartedOpeningAnimation) {
+        return;
+      }
+
+      hasStartedOpeningAnimation = true;
+      setIsGlobeReady(true);
+
+      openingAnimationTimeout = window.setTimeout(() => {
+        if (isDestroyed) {
+          return;
+        }
+
+        playOpeningGlobeAnimation(view).catch(() => {
+          // The animation may be interrupted if the user navigates away or moves the globe.
+        });
+      }, 280);
+    };
+    const waitForInitialImagery = async () => {
+      const basemapLayers = [
+        ...(map.basemap?.baseLayers?.toArray() ?? []),
+        ...(map.basemap?.referenceLayers?.toArray() ?? []),
+      ];
+
+      if (basemapLayers.length === 0) {
+        startOpeningAnimation();
+        return;
+      }
+
+      const layerViews = (
+        await Promise.all(
+          basemapLayers.map((layer) =>
+            view.whenLayerView(layer).catch(() => null),
+          ),
+        )
+      ).filter((layerView): layerView is LayerView => Boolean(layerView));
+
+      if (isDestroyed || layerViews.length === 0) {
+        startOpeningAnimation();
+        return;
+      }
+
+      const areInitialLayersReady = () =>
+        layerViews.every((layerView) => !layerView.updating);
+      const scheduleOpeningAfterStableImagery = () => {
+        if (initialImageryStableTimeout) {
+          window.clearTimeout(initialImageryStableTimeout);
+        }
+
+        initialImageryStableTimeout = window.setTimeout(
+          startOpeningAnimation,
+          2200,
+        );
+      };
+
+      layerViews.forEach((layerView) => {
+        imageryLayerHandles.push(
+          layerView.watch('updating', () => {
+            if (initialImageryStableTimeout) {
+              window.clearTimeout(initialImageryStableTimeout);
+              initialImageryStableTimeout = null;
+            }
+
+            if (areInitialLayersReady()) {
+              scheduleOpeningAfterStableImagery();
+            }
+          }),
+        );
+      });
+
+      if (areInitialLayersReady()) {
+        scheduleOpeningAfterStableImagery();
+      }
+    };
+
     view.when(() => {
       if (isDestroyed) {
         return;
       }
 
-      playOpeningGlobeAnimation(view).catch(() => {
-        // The animation may be interrupted if the user navigates away or moves the globe.
-      });
+      updateProgressLayerVisibility();
+      waitForInitialImagery().catch(startOpeningAnimation);
+      initialImageryFallbackTimeout = window.setTimeout(
+        startOpeningAnimation,
+        30000,
+      );
     });
     const clickHandle = view.on('click', async (event) => {
-      if (!importedActivitiesLayer) {
+      if (!importedActivitiesLayer && progressMarkerLayer.graphics.length === 0) {
         return;
       }
 
       const hitTest = await view.hitTest(event, {
-        include: importedActivitiesLayer,
+        include: importedActivitiesLayer
+          ? [progressMarkerLayer, importedActivitiesLayer]
+          : progressMarkerLayer,
       });
+      const progressResult = hitTest.results.find((result) => {
+        const graphic = 'graphic' in result ? result.graphic : null;
+
+        return Boolean(graphic?.attributes?.isProgressPosition);
+      });
+      const progressGraphic =
+        progressResult && 'graphic' in progressResult
+          ? progressResult.graphic
+          : null;
+      const progressActivity = progressGraphic?.attributes?.activity as
+        | SelectedProjectActivity
+        | undefined;
+
+      if (progressGraphic && progressActivity) {
+        const progressGeometry = progressGraphic.geometry;
+
+        if (!progressGeometry) {
+          return;
+        }
+
+        focusedProgressLayer.removeAll();
+        const previousProgressGraphic = selectedProgressGraphic.current;
+
+        if (previousProgressGraphic && previousProgressGraphic !== progressGraphic) {
+          previousProgressGraphic.symbol = createProgressMarkerSymbol(
+            previousProgressGraphic.attributes.activity as ProjectActivity,
+          );
+        }
+
+        progressGraphic.symbol = createProgressMarkerSymbol(
+          progressGraphic.attributes.activity as ProjectActivity,
+          true,
+        );
+        selectedProgressGraphic.current = progressGraphic;
+        onActivitySelect(progressActivity);
+        view.goTo(
+          {
+            target: progressGeometry,
+            scale: 140000,
+            tilt: 0,
+          },
+          {
+            animate: true,
+            duration: 900,
+          },
+        ).catch(() => {
+          // The view may be interrupted by a user pan/zoom.
+        });
+        return;
+      }
+
       const activityResult = hitTest.results.find((result) => {
         const graphic = 'graphic' in result ? result.graphic : null;
 
@@ -1087,6 +1640,7 @@ function GlobeView({
         return;
       }
 
+      focusedProgressLayer.removeAll();
       const previousGraphic = selectedActivityGraphic.current;
 
       if (previousGraphic && previousGraphic !== graphic) {
@@ -1147,6 +1701,8 @@ function GlobeView({
         }
 
         const graphic = addProjectActivityGraphic(projectActivity);
+        rebuildProgressGraphics();
+        updateProgressLayerVisibility();
 
         if (graphic) {
           if (selectedActivityGraphic.current) {
@@ -1179,17 +1735,42 @@ function GlobeView({
     return () => {
       isDestroyed = true;
       importedActivityGraphics.current.clear();
+      progressActivityGraphics.current.clear();
+      focusedProgressLayer.removeAll();
       selectedActivityGraphic.current = null;
+      selectedProgressGraphic.current = null;
+      focusedProgressLayerRef.current = null;
       viewRef.current = null;
+      if (openingAnimationTimeout) {
+        window.clearTimeout(openingAnimationTimeout);
+      }
+      if (initialImageryStableTimeout) {
+        window.clearTimeout(initialImageryStableTimeout);
+      }
+      if (initialImageryFallbackTimeout) {
+        window.clearTimeout(initialImageryFallbackTimeout);
+      }
+      imageryLayerHandles.forEach((handle) => handle.remove());
       clickHandle.remove();
+      progressVisibilityHandle.remove();
       testActivityButton.remove();
       view.destroy();
     };
   }, [onActivitySelect, session]);
 
   return (
-    <div className="globe-view-shell">
+    <div className={`globe-view-shell${isGlobeReady ? ' globe-view-ready' : ' globe-view-loading'}`}>
       <div className="globe-view" ref={sceneNode} aria-label="3D globe" />
+      {!isGlobeReady && (
+        <div className="globe-loading-scrim" aria-live="polite">
+          <img
+            className="globe-loading-logo"
+            src={loadingLogoUrl}
+            alt="Project Far Point"
+          />
+          <p>Loading globe imagery</p>
+        </div>
+      )}
       {isProjectOwner(session) && (
         <div className="map-test-activity-status" aria-live="polite">
           {isGeneratingTestActivity && <p>Generating test activity...</p>}
@@ -2142,6 +2723,8 @@ function AddActivityPage({ session }: AddActivityPageProps) {
 type ActivityStoryProps = {
   activity: SelectedProjectActivity;
   onBack: () => void;
+  onFocusActivity: (activityId: string) => void;
+  onFocusProgressPosition: (activityId: string) => void;
   isArriving?: boolean;
 };
 
@@ -2432,7 +3015,13 @@ function renderActivityParagraph(
     : [<p key={`text-${paragraphIndex}`}>{paragraph}</p>];
 }
 
-function ActivityStory({ activity, onBack, isArriving = false }: ActivityStoryProps) {
+function ActivityStory({
+  activity,
+  onBack,
+  onFocusActivity,
+  onFocusProgressPosition,
+  isArriving = false,
+}: ActivityStoryProps) {
   const [activityImages, setActivityImages] = useState<ProjectActivityImage[]>([]);
   const [activeImage, setActiveImage] = useState<ProjectActivityImage | null>(null);
   const openActivityImage = useCallback((image: ProjectActivityImage) => {
@@ -2509,6 +3098,22 @@ function ActivityStory({ activity, onBack, isArriving = false }: ActivityStoryPr
         {activityDateTime && <span>{activityDateTime}</span>}
         {correctedDistance && <span>Distance: {correctedDistance}</span>}
         {distanceMadeGood && <span>Made good: {distanceMadeGood}</span>}
+        <button
+          className="route-story-map-link"
+          type="button"
+          onClick={() => onFocusActivity(activity.id)}
+        >
+          Zoom to Activity
+        </button>
+        {activity.pfp_type && (
+          <button
+            className="route-story-map-link route-story-progress-link"
+            type="button"
+            onClick={() => onFocusProgressPosition(activity.id)}
+          >
+            Progress Position
+          </button>
+        )}
         {activity.strava_url && (
           <a
             className="route-story-strava-link"
@@ -3107,6 +3712,9 @@ function App() {
     useState<DesktopContentTab>('story');
   const [mapFocusActivityId, setMapFocusActivityId] = useState<string | null>(null);
   const [mapFocusActivityKey, setMapFocusActivityKey] = useState(0);
+  const [mapProgressFocusActivityId, setMapProgressFocusActivityId] =
+    useState<string | null>(null);
+  const [mapProgressFocusActivityKey, setMapProgressFocusActivityKey] = useState(0);
   const [showLogoLightbox, setShowLogoLightbox] = useState(false);
   const logoUrl = `${import.meta.env.BASE_URL}ProjectFarPoint.png`;
 
@@ -3220,6 +3828,14 @@ function App() {
     setSelectedActivityAnimationKey((currentKey) => currentKey + 1);
     setMapFocusActivityId(activity.id);
     setMapFocusActivityKey((currentKey) => currentKey + 1);
+  }, []);
+  const handleActivityFocus = useCallback((activityId: string) => {
+    setMapFocusActivityId(activityId);
+    setMapFocusActivityKey((currentKey) => currentKey + 1);
+  }, []);
+  const handleProgressPositionFocus = useCallback((activityId: string) => {
+    setMapProgressFocusActivityId(activityId);
+    setMapProgressFocusActivityKey((currentKey) => currentKey + 1);
   }, []);
   const handleBackToIntro = useCallback(() => {
     setSelectedActivity(null);
@@ -3358,6 +3974,8 @@ function App() {
               key={`${selectedActivity.id}-${selectedActivityAnimationKey}`}
               activity={selectedActivity}
               onBack={handleBackToIntro}
+              onFocusActivity={handleActivityFocus}
+              onFocusProgressPosition={handleProgressPositionFocus}
               isArriving
             />
           ) : (
@@ -3449,6 +4067,8 @@ function App() {
             selectedActivityId={selectedActivity?.id ?? null}
             focusActivityId={mapFocusActivityId}
             focusActivityKey={mapFocusActivityKey}
+            focusProgressActivityId={mapProgressFocusActivityId}
+            focusProgressActivityKey={mapProgressFocusActivityKey}
             onActivitySelect={handleActivitySelect}
           />
         </div>
