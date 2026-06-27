@@ -129,6 +129,7 @@ type ActivityImageInput = {
 type ProjectPathFilter = 'Voyager' | 'Far Point Trail' | '';
 type SearchSortField = 'date' | 'distance' | 'name' | 'location';
 type SearchSortDirection = 'asc' | 'desc';
+type ActivityPanelMode = 'story' | 'progress';
 
 type SearchPanelProps = {
   onActivitySelect: (activity: ProjectActivity) => void;
@@ -142,8 +143,78 @@ type ProgressPosition = {
   position: LatLon;
 };
 
+type JourneyProgressSummary = Record<ProgressPath, number>;
+
+type NearbyPlaceLookup =
+  | { status: 'idle' | 'loading' }
+  | { status: 'ready'; label: string }
+  | { status: 'error' };
+
+type ArcgisReverseGeocodeResponse = {
+  address?: {
+    Match_addr?: string;
+    City?: string;
+    Subregion?: string;
+    Region?: string;
+    CntryName?: string;
+    CountryCode?: string;
+  };
+  location?: {
+    x?: number;
+    y?: number;
+  };
+  error?: {
+    message?: string;
+  };
+};
+
+type ArcgisAddressCandidate = {
+  address?: string;
+  location?: {
+    x?: number;
+    y?: number;
+  };
+  attributes?: {
+    PlaceName?: string;
+    City?: string;
+    Region?: string;
+    CntryName?: string;
+    CountryCode?: string;
+  };
+};
+
+type ArcgisAddressCandidatesResponse = {
+  candidates?: ArcgisAddressCandidate[];
+  error?: {
+    message?: string;
+  };
+};
+
+type ArcgisWorldCityFeature = {
+  attributes?: {
+    CITY_NAME?: string;
+    CNTRY_NAME?: string;
+    POP?: number;
+  };
+  geometry?: {
+    x?: number;
+    y?: number;
+  };
+};
+
+type ArcgisWorldCitiesResponse = {
+  features?: ArcgisWorldCityFeature[];
+  error?: {
+    message?: string;
+  };
+};
+
 const projectActivitySelectColumns =
   'id,name,sport_type,started_at,pfp_type,trail_name,city,state,province,country,continent,corrected_distance,distance_made_good,strava_type,strava_url,text_description,geometry_simplified_medium,geometry_geojson';
+const arcgisWorldGeocodeServiceUrl =
+  'https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer';
+const arcgisWorldCitiesLayerUrl =
+  'https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/World_Cities/FeatureServer/0';
 
 const voyagerStart: LatLon = {
   latitude: -42.880468,
@@ -167,7 +238,7 @@ const calgary: LatLon = {
 
 const halfJourneyKilometers = 20038;
 const earthCircumferenceKilometers = halfJourneyKilometers * 2;
-const sampleProgressKilometers = 1000;
+const journeyProgressAnimationKilometersPerSecond = 1000;
 const guideRouteWidth = 3.4;
 const progressMarkersVisibleWidthKilometers = 300;
 const progressLabelsVisibleWidthKilometers = 100;
@@ -316,19 +387,23 @@ function createFarPointTrailPath() {
   return createAntipodalRoutePath(voyagerStart, everestAntipode);
 }
 
-function createVoyagerProgressPath() {
+function clampJourneyProgressKilometers(distanceKilometers: number) {
+  return Math.min(halfJourneyKilometers, Math.max(0, distanceKilometers));
+}
+
+function createVoyagerProgressPath(distanceKilometers: number) {
   return createAntipodalRoutePath(
     voyagerStart,
     everestSummit,
-    Math.PI * (sampleProgressKilometers / halfJourneyKilometers),
+    Math.PI * (clampJourneyProgressKilometers(distanceKilometers) / halfJourneyKilometers),
   );
 }
 
-function createFarPointProgressPath() {
+function createFarPointProgressPath(distanceKilometers: number) {
   return createAntipodalRoutePath(
     voyagerAntipode,
     everestAntipode,
-    Math.PI * (sampleProgressKilometers / halfJourneyKilometers),
+    Math.PI * (clampJourneyProgressKilometers(distanceKilometers) / halfJourneyKilometers),
   );
 }
 
@@ -456,6 +531,111 @@ function createProgressPositions(activities: ProjectActivity[]) {
   });
 
   return positions;
+}
+
+function createJourneyProgressSummary(activities: ProjectActivity[]): JourneyProgressSummary {
+  return activities.reduce<JourneyProgressSummary>(
+    (summary, activity) => {
+      if (activity.pfp_type !== 'Voyager' && activity.pfp_type !== 'Far Point Trail') {
+        return summary;
+      }
+
+      summary[activity.pfp_type] += getKilometerValue(activity.distance_made_good);
+
+      return summary;
+    },
+    {
+      Voyager: 0,
+      'Far Point Trail': 0,
+    },
+  );
+}
+
+function useAnimatedJourneyProgress(
+  targetProgress: JourneyProgressSummary,
+  isEnabled: boolean,
+) {
+  const [animatedProgress, setAnimatedProgress] = useState<JourneyProgressSummary>({
+    Voyager: 0,
+    'Far Point Trail': 0,
+  });
+  const animatedProgressRef = useRef(animatedProgress);
+
+  useEffect(() => {
+    if (!isEnabled) {
+      const emptyProgress = {
+        Voyager: 0,
+        'Far Point Trail': 0,
+      };
+
+      animatedProgressRef.current = emptyProgress;
+      setAnimatedProgress(emptyProgress);
+      return;
+    }
+
+    const prefersReducedMotion = window.matchMedia(
+      '(prefers-reduced-motion: reduce)',
+    ).matches;
+
+    if (prefersReducedMotion) {
+      animatedProgressRef.current = targetProgress;
+      setAnimatedProgress(targetProgress);
+      return;
+    }
+
+    let animationFrame = 0;
+    let previousTimestamp: number | null = null;
+    const progressPaths: ProgressPath[] = ['Voyager', 'Far Point Trail'];
+
+    function step(timestamp: number) {
+      if (previousTimestamp === null) {
+        previousTimestamp = timestamp;
+      }
+
+      const elapsedSeconds = (timestamp - previousTimestamp) / 1000;
+      const maximumStepKilometers =
+        elapsedSeconds * journeyProgressAnimationKilometersPerSecond;
+      previousTimestamp = timestamp;
+      let isComplete = true;
+      const nextProgress = progressPaths.reduce<JourneyProgressSummary>(
+        (next, path) => {
+          const currentDistance = animatedProgressRef.current[path];
+          const targetDistance = targetProgress[path];
+          const remainingDistance = targetDistance - currentDistance;
+
+          if (Math.abs(remainingDistance) <= maximumStepKilometers) {
+            next[path] = targetDistance;
+            return next;
+          }
+
+          isComplete = false;
+          next[path] =
+            currentDistance + Math.sign(remainingDistance) * maximumStepKilometers;
+
+          return next;
+        },
+        {
+          Voyager: 0,
+          'Far Point Trail': 0,
+        },
+      );
+
+      animatedProgressRef.current = nextProgress;
+      setAnimatedProgress(nextProgress);
+
+      if (!isComplete) {
+        animationFrame = window.requestAnimationFrame(step);
+      }
+    }
+
+    animationFrame = window.requestAnimationFrame(step);
+
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+    };
+  }, [isEnabled, targetProgress]);
+
+  return animatedProgress;
 }
 
 function createProgressMarkerSymbol(activity: ProjectActivity, isSelected = false) {
@@ -688,6 +868,337 @@ function formatKilometers(value: number | string | null) {
   })} km`;
 }
 
+function formatCoordinate(value: number, directionA: string, directionB: string) {
+  const direction = value >= 0 ? directionA : directionB;
+
+  return `${Math.abs(value).toFixed(5)}° ${direction}`;
+}
+
+function formatLatLon(position: LatLon) {
+  return `${formatCoordinate(position.latitude, 'N', 'S')} / ${formatCoordinate(
+    position.longitude,
+    'E',
+    'W',
+  )}`;
+}
+
+function formatPercent(value: number) {
+  return `${value.toLocaleString(undefined, {
+    maximumFractionDigits: 2,
+  })}%`;
+}
+
+function getGreatCircleDistanceKilometers(from: LatLon, to: LatLon) {
+  const fromVector = toVector(from);
+  const toPointVector = toVector(to);
+  const clampedDot = Math.min(1, Math.max(-1, dot(fromVector, toPointVector)));
+  const earthRadiusKilometers = earthCircumferenceKilometers / (2 * Math.PI);
+
+  return Math.acos(clampedDot) * earthRadiusKilometers;
+}
+
+function cleanCountryName(value: string) {
+  return value
+    .replace(/^Kingdom of\s+/i, '')
+    .replace(/^Republic of\s+/i, '')
+    .replace(/^The\s+/i, '')
+    .replace(/\s+Republic$/i, '')
+    .replace(/\s+Kingdom$/i, '')
+    .trim();
+}
+
+function formatNearbyPlaceLabel(
+  searchPosition: LatLon,
+  placePosition: LatLon,
+  city: string,
+  country: string,
+) {
+  const distanceKilometers = getGreatCircleDistanceKilometers(searchPosition, placePosition);
+  const distanceLabel = formatKilometers(distanceKilometers) ?? '0 km';
+
+  return `${distanceLabel} from ${city}, ${cleanCountryName(country)}`;
+}
+
+function getCandidatePlace(position: LatLon, candidate: ArcgisAddressCandidate) {
+  const attributes = candidate.attributes;
+  const country = attributes?.CntryName || attributes?.CountryCode;
+  const placeName = attributes?.PlaceName || attributes?.City || candidate.address;
+  const longitude = candidate.location?.x;
+  const latitude = candidate.location?.y;
+
+  if (
+    !placeName ||
+    !country ||
+    cleanCountryName(placeName) === cleanCountryName(country) ||
+    typeof longitude !== 'number' ||
+    typeof latitude !== 'number' ||
+    !Number.isFinite(longitude) ||
+    !Number.isFinite(latitude)
+  ) {
+    return null;
+  }
+
+  const placePosition = {
+    latitude,
+    longitude,
+  };
+
+  return {
+    distanceKilometers: getGreatCircleDistanceKilometers(position, placePosition),
+    label: formatNearbyPlaceLabel(position, placePosition, placeName, country),
+  };
+}
+
+function getWorldCityPlace(position: LatLon, feature: ArcgisWorldCityFeature) {
+  const city = feature.attributes?.CITY_NAME;
+  const country = feature.attributes?.CNTRY_NAME;
+  const longitude = feature.geometry?.x;
+  const latitude = feature.geometry?.y;
+
+  if (
+    !city ||
+    !country ||
+    typeof longitude !== 'number' ||
+    typeof latitude !== 'number' ||
+    !Number.isFinite(longitude) ||
+    !Number.isFinite(latitude)
+  ) {
+    return null;
+  }
+
+  const placePosition = {
+    latitude,
+    longitude,
+  };
+
+  return {
+    distanceKilometers: getGreatCircleDistanceKilometers(position, placePosition),
+    label: formatNearbyPlaceLabel(position, placePosition, city, country),
+  };
+}
+
+function getLongitudeRanges(centerLongitude: number, radiusDegrees: number) {
+  if (radiusDegrees >= 180) {
+    return [[-180, 180]];
+  }
+
+  const minimumLongitude = centerLongitude - radiusDegrees;
+  const maximumLongitude = centerLongitude + radiusDegrees;
+
+  if (minimumLongitude < -180) {
+    return [
+      [minimumLongitude + 360, 180],
+      [-180, maximumLongitude],
+    ];
+  }
+
+  if (maximumLongitude > 180) {
+    return [
+      [minimumLongitude, 180],
+      [-180, maximumLongitude - 360],
+    ];
+  }
+
+  return [[minimumLongitude, maximumLongitude]];
+}
+
+async function queryWorldCityCandidates(
+  position: LatLon,
+  radiusKilometers: number,
+  signal: AbortSignal,
+) {
+  const latitudeRadiusDegrees = Math.min(90, radiusKilometers / 111.32);
+  const latitudeCosine = Math.cos(degreesToRadians(position.latitude));
+  const longitudeRadiusDegrees =
+    Math.abs(latitudeCosine) < 0.08
+      ? 180
+      : Math.min(180, radiusKilometers / (111.32 * Math.abs(latitudeCosine)));
+  const minimumLatitude = Math.max(-90, position.latitude - latitudeRadiusDegrees);
+  const maximumLatitude = Math.min(90, position.latitude + latitudeRadiusDegrees);
+  const longitudeRanges = getLongitudeRanges(position.longitude, longitudeRadiusDegrees);
+  const features = await Promise.all(
+    longitudeRanges.map(async ([minimumLongitude, maximumLongitude]) => {
+      const params = new URLSearchParams({
+        f: 'json',
+        geometry: [
+          minimumLongitude,
+          minimumLatitude,
+          maximumLongitude,
+          maximumLatitude,
+        ].join(','),
+        geometryType: 'esriGeometryEnvelope',
+        inSR: '4326',
+        outFields: 'CITY_NAME,CNTRY_NAME,POP',
+        outSR: '4326',
+        resultRecordCount: '2000',
+        returnGeometry: 'true',
+        spatialRel: 'esriSpatialRelIntersects',
+        where: '1=1',
+      });
+      const response = await fetch(
+        `${arcgisWorldCitiesLayerUrl}/query?${params.toString()}`,
+        { signal },
+      );
+
+      if (!response.ok) {
+        throw new Error('Could not lookup world cities.');
+      }
+
+      const data = (await response.json()) as ArcgisWorldCitiesResponse;
+
+      if (data.error) {
+        throw new Error(data.error.message ?? 'Could not lookup world cities.');
+      }
+
+      return data.features ?? [];
+    }),
+  );
+
+  return features.flat();
+}
+
+async function lookupNearbyCity(position: LatLon, signal: AbortSignal) {
+  const params = new URLSearchParams({
+    f: 'json',
+    category: 'City',
+    langCode: 'en',
+    location: `${position.longitude},${position.latitude}`,
+    maxLocations: '12',
+    outFields: 'PlaceName,City,Region,CntryName,CountryCode',
+  });
+  const response = await fetch(
+    `${arcgisWorldGeocodeServiceUrl}/findAddressCandidates?${params.toString()}`,
+    { signal },
+  );
+
+  if (!response.ok) {
+    throw new Error('Could not lookup nearby place.');
+  }
+
+  const data = (await response.json()) as ArcgisAddressCandidatesResponse;
+
+  if (data.error) {
+    throw new Error(data.error.message ?? 'Could not lookup nearby place.');
+  }
+
+  const candidatePlaces = (data.candidates ?? [])
+    .map((candidate) => getCandidatePlace(position, candidate))
+    .filter((place): place is { distanceKilometers: number; label: string } =>
+      Boolean(place),
+    )
+    .sort((left, right) => left.distanceKilometers - right.distanceKilometers);
+
+  if (!candidatePlaces.length) {
+    throw new Error('Could not lookup nearby city.');
+  }
+
+  return candidatePlaces[0].label;
+}
+
+async function lookupNearestWorldCity(position: LatLon, signal: AbortSignal) {
+  const searchRadiiKilometers = [
+    100,
+    250,
+    500,
+    1000,
+    2000,
+    4000,
+    8000,
+    12000,
+    halfJourneyKilometers,
+  ];
+
+  for (const radiusKilometers of searchRadiiKilometers) {
+    const candidatePlaces = (await queryWorldCityCandidates(
+      position,
+      radiusKilometers,
+      signal,
+    ))
+      .map((feature) => getWorldCityPlace(position, feature))
+      .filter((place): place is { distanceKilometers: number; label: string } =>
+        Boolean(place),
+      )
+      .sort((left, right) => left.distanceKilometers - right.distanceKilometers);
+
+    if (candidatePlaces.length) {
+      return candidatePlaces[0].label;
+    }
+  }
+
+  throw new Error('Could not lookup nearest world city.');
+}
+
+async function reverseLookupNearbyPlace(position: LatLon, signal: AbortSignal) {
+  const params = new URLSearchParams({
+    f: 'json',
+    langCode: 'en',
+    location: `${position.longitude},${position.latitude}`,
+    outSR: '4326',
+  });
+  const response = await fetch(
+    `${arcgisWorldGeocodeServiceUrl}/reverseGeocode?${params.toString()}`,
+    { signal },
+  );
+
+  if (!response.ok) {
+    throw new Error('Could not lookup nearby place.');
+  }
+
+  const data = (await response.json()) as ArcgisReverseGeocodeResponse;
+
+  if (data.error) {
+    throw new Error(data.error.message ?? 'Could not lookup nearby place.');
+  }
+
+  const address = data.address;
+  const location = data.location;
+  const city = address?.City || address?.Subregion || address?.Region || address?.Match_addr;
+  const country = address?.CntryName || address?.CountryCode;
+  const longitude = location?.x;
+  const latitude = location?.y;
+
+  if (
+    !city ||
+    !country ||
+    typeof longitude !== 'number' ||
+    typeof latitude !== 'number' ||
+    !Number.isFinite(longitude) ||
+    !Number.isFinite(latitude)
+  ) {
+    throw new Error('Could not lookup nearby place.');
+  }
+
+  return formatNearbyPlaceLabel(
+    position,
+    {
+      latitude,
+      longitude,
+    },
+    city,
+    country,
+  );
+}
+
+async function lookupNearbyPlace(position: LatLon, signal: AbortSignal) {
+  try {
+    return await lookupNearbyCity(position, signal);
+  } catch (error) {
+    if (signal.aborted) {
+      throw error;
+    }
+  }
+
+  try {
+    return await reverseLookupNearbyPlace(position, signal);
+  } catch (error) {
+    if (signal.aborted) {
+      throw error;
+    }
+
+    return lookupNearestWorldCity(position, signal);
+  }
+}
+
 function formatActivityDateTime(value: string | null) {
   if (!value) {
     return null;
@@ -895,7 +1406,10 @@ type GlobeViewProps = {
   focusActivityKey: number;
   focusProgressActivityId: string | null;
   focusProgressActivityKey: number;
+  journeyProgress: JourneyProgressSummary;
   onActivitySelect: (activity: SelectedProjectActivity) => void;
+  onGlobeReadyChange: (isReady: boolean) => void;
+  onProgressActivitySelect: (activity: SelectedProjectActivity) => void;
 };
 
 function GlobeView({
@@ -905,12 +1419,18 @@ function GlobeView({
   focusActivityKey,
   focusProgressActivityId,
   focusProgressActivityKey,
+  journeyProgress,
   onActivitySelect,
+  onGlobeReadyChange,
+  onProgressActivitySelect,
 }: GlobeViewProps) {
   const sceneNode = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<SceneView | null>(null);
   const importedActivityGraphics = useRef(new globalThis.Map<string, Graphic>());
   const progressActivityGraphics = useRef(new globalThis.Map<string, Graphic>());
+  const journeyProgressRef = useRef(journeyProgress);
+  const voyagerProgressGraphic = useRef<Graphic | null>(null);
+  const farPointProgressGraphic = useRef<Graphic | null>(null);
   const focusedProgressLayerRef = useRef<GraphicsLayer | null>(null);
   const selectedActivityGraphic = useRef<Graphic | null>(null);
   const selectedProgressGraphic = useRef<Graphic | null>(null);
@@ -1084,11 +1604,40 @@ function GlobeView({
   }, [focusProgressActivityId, focusProgressActivityKey]);
 
   useEffect(() => {
+    journeyProgressRef.current = journeyProgress;
+
+    if (voyagerProgressGraphic.current) {
+      voyagerProgressGraphic.current.geometry = {
+        type: 'polyline',
+        paths: createVoyagerProgressPath(journeyProgress.Voyager),
+        spatialReference: {
+          wkid: 4326,
+        },
+      };
+      voyagerProgressGraphic.current.attributes.distance =
+        formatKilometers(journeyProgress.Voyager) ?? '0 km';
+    }
+
+    if (farPointProgressGraphic.current) {
+      farPointProgressGraphic.current.geometry = {
+        type: 'polyline',
+        paths: createFarPointProgressPath(journeyProgress['Far Point Trail']),
+        spatialReference: {
+          wkid: 4326,
+        },
+      };
+      farPointProgressGraphic.current.attributes.distance =
+        formatKilometers(journeyProgress['Far Point Trail']) ?? '0 km';
+    }
+  }, [journeyProgress]);
+
+  useEffect(() => {
     if (!sceneNode.current) {
       return;
     }
 
     setIsGlobeReady(false);
+    onGlobeReadyChange(false);
     let isDestroyed = false;
     let importedActivitiesLayer: GraphicsLayer | null = null;
     const projectActivities = new globalThis.Map<string, ProjectActivity>();
@@ -1164,10 +1713,11 @@ function GlobeView({
         via: `${everestAntipode.latitude}, ${everestAntipode.longitude}`,
       },
     });
+    const currentJourneyProgress = journeyProgressRef.current;
     const voyagerProgress = new Graphic({
       geometry: {
         type: 'polyline',
-        paths: createVoyagerProgressPath(),
+        paths: createVoyagerProgressPath(currentJourneyProgress.Voyager),
         spatialReference: {
           wkid: 4326,
         },
@@ -1179,13 +1729,13 @@ function GlobeView({
       },
       attributes: {
         name: 'Voyager progress',
-        distance: `${sampleProgressKilometers} km`,
+        distance: formatKilometers(currentJourneyProgress.Voyager) ?? '0 km',
       },
     });
     const farPointProgress = new Graphic({
       geometry: {
         type: 'polyline',
-        paths: createFarPointProgressPath(),
+        paths: createFarPointProgressPath(currentJourneyProgress['Far Point Trail']),
         spatialReference: {
           wkid: 4326,
         },
@@ -1197,9 +1747,11 @@ function GlobeView({
       },
       attributes: {
         name: 'Far Point Trail progress',
-        distance: `${sampleProgressKilometers} km`,
+        distance: formatKilometers(currentJourneyProgress['Far Point Trail']) ?? '0 km',
       },
     });
+    voyagerProgressGraphic.current = voyagerProgress;
+    farPointProgressGraphic.current = farPointProgress;
     const cathedralMarker = new Graphic({
       geometry: {
         type: 'point',
@@ -1482,6 +2034,7 @@ function GlobeView({
 
       hasStartedOpeningAnimation = true;
       setIsGlobeReady(true);
+      onGlobeReadyChange(true);
 
       openingAnimationTimeout = window.setTimeout(() => {
         if (isDestroyed) {
@@ -1606,7 +2159,7 @@ function GlobeView({
           true,
         );
         selectedProgressGraphic.current = progressGraphic;
-        onActivitySelect(progressActivity);
+        onProgressActivitySelect(progressActivity);
         view.goTo(
           {
             target: progressGeometry,
@@ -1736,11 +2289,14 @@ function GlobeView({
       isDestroyed = true;
       importedActivityGraphics.current.clear();
       progressActivityGraphics.current.clear();
+      voyagerProgressGraphic.current = null;
+      farPointProgressGraphic.current = null;
       focusedProgressLayer.removeAll();
       selectedActivityGraphic.current = null;
       selectedProgressGraphic.current = null;
       focusedProgressLayerRef.current = null;
       viewRef.current = null;
+      onGlobeReadyChange(false);
       if (openingAnimationTimeout) {
         window.clearTimeout(openingAnimationTimeout);
       }
@@ -1756,7 +2312,7 @@ function GlobeView({
       testActivityButton.remove();
       view.destroy();
     };
-  }, [onActivitySelect, session]);
+  }, [onActivitySelect, onGlobeReadyChange, onProgressActivitySelect, session]);
 
   return (
     <div className={`globe-view-shell${isGlobeReady ? ' globe-view-ready' : ' globe-view-loading'}`}>
@@ -1768,7 +2324,14 @@ function GlobeView({
             src={loadingLogoUrl}
             alt="Project Far Point"
           />
-          <p>Loading globe imagery</p>
+          <p>
+            <span>Loading globe imagery</span>
+            <span className="globe-loading-dots" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </span>
+          </p>
         </div>
       )}
       {isProjectOwner(session) && (
@@ -3162,27 +3725,183 @@ function ActivityStory({
   );
 }
 
-function JourneySummary() {
+type ProgressStoryProps = {
+  activity: SelectedProjectActivity;
+  progressPosition: ProgressPosition | null;
+  onBack: () => void;
+  onFocusActivity: (activityId: string) => void;
+  onFocusProgressPosition: (activityId: string) => void;
+  isArriving?: boolean;
+};
+
+function ProgressStory({
+  activity,
+  progressPosition,
+  onBack,
+  onFocusActivity,
+  onFocusProgressPosition,
+  isArriving = false,
+}: ProgressStoryProps) {
+  const [nearbyPlaceLookup, setNearbyPlaceLookup] = useState<NearbyPlaceLookup>({
+    status: 'idle',
+  });
+  const progressDistance = progressPosition?.progressKilometers ?? null;
+  const position = progressPosition?.position ?? null;
+  const progressDistanceLabel =
+    progressDistance === null ? 'Calculating...' : formatKilometers(progressDistance);
+  const percentCompleteLabel =
+    progressDistance === null
+      ? 'Calculating...'
+      : formatPercent((progressDistance / halfJourneyKilometers) * 100);
+  const correctedDistance = formatKilometers(activity.corrected_distance);
+  const distanceMadeGood = formatKilometers(activity.distance_made_good);
+  const activityDateTime = formatActivityDateTime(activity.started_at);
+  const activityRouteClass =
+    activity.pfp_type === 'Far Point Trail'
+      ? 'journey-far-point'
+      : 'journey-voyager';
+  const nearbyPlaceLabel =
+    nearbyPlaceLookup.status === 'ready'
+      ? nearbyPlaceLookup.label
+      : nearbyPlaceLookup.status === 'loading'
+        ? 'looking up nearest city...'
+        : nearbyPlaceLookup.status === 'error'
+          ? 'nearest city unavailable'
+          : 'nearest city pending';
+
+  useEffect(() => {
+    if (!position) {
+      setNearbyPlaceLookup({ status: 'idle' });
+      return;
+    }
+
+    const abortController = new AbortController();
+
+    setNearbyPlaceLookup({ status: 'loading' });
+    lookupNearbyPlace(position, abortController.signal)
+      .then((label) => {
+        setNearbyPlaceLookup({ status: 'ready', label });
+      })
+      .catch((error) => {
+        if (abortController.signal.aborted) {
+          return;
+        }
+
+        console.error('Could not lookup nearby progress place.', error);
+        setNearbyPlaceLookup({ status: 'error' });
+      });
+
+    return () => {
+      abortController.abort();
+    };
+  }, [position?.latitude, position?.longitude]);
+
+  return (
+    <article className={`route-story progress-story${isArriving ? ' route-story-arriving' : ''}`}>
+      <p className={`eyebrow ${activityRouteClass}`}>
+        {activity.pfp_type ?? 'Project Far Point Route'} Progress
+      </p>
+      <h2>{activity.trail_name || activity.name}</h2>
+      <div className="route-story-meta" aria-label="Progress actions">
+        <button
+          className="route-story-back"
+          type="button"
+          onClick={onBack}
+          aria-label="Back to Project Far Point"
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+            <path d="M3 10.8 12 3l9 7.8" />
+            <path d="M5.5 9.2V21h13V9.2" />
+            <path d="M9.5 21v-6.2h5V21" />
+          </svg>
+        </button>
+        {activityDateTime && <span>{activityDateTime}</span>}
+        {correctedDistance && <span>Distance: {correctedDistance}</span>}
+        {distanceMadeGood && <span>Made good: {distanceMadeGood}</span>}
+        <button
+          className="route-story-map-link"
+          type="button"
+          onClick={() => onFocusActivity(activity.id)}
+        >
+          Zoom to Activity
+        </button>
+        <button
+          className="route-story-map-link route-story-progress-link"
+          type="button"
+          onClick={() => onFocusProgressPosition(activity.id)}
+        >
+          Zoom to Progress
+        </button>
+      </div>
+      <dl className="progress-story-facts">
+        <div>
+          <dt>Position</dt>
+          <dd>
+            {position ? formatLatLon(position) : 'Calculating...'} - {nearbyPlaceLabel}
+          </dd>
+        </div>
+        <div>
+          <dt>Distance from Start</dt>
+          <dd>{progressDistanceLabel}</dd>
+        </div>
+        <div>
+          <dt>Percent Complete</dt>
+          <dd>{percentCompleteLabel}</dd>
+        </div>
+      </dl>
+      <div className="progress-story-placeholder">
+        <p>Progress reflections will appear here.</p>
+      </div>
+    </article>
+  );
+}
+
+type JourneySummaryProps = {
+  progress: JourneyProgressSummary;
+};
+
+function getJourneyProgressDetails(distanceKilometers: number) {
+  const percentComplete = (distanceKilometers / halfJourneyKilometers) * 100;
+
+  return {
+    distanceLabel: formatKilometers(distanceKilometers) ?? '0 km',
+    percentLabel: formatPercent(percentComplete),
+    progressWidth: `${Math.min(100, Math.max(0, percentComplete))}%`,
+  };
+}
+
+function JourneySummary({ progress }: JourneySummaryProps) {
+  const voyagerProgress = getJourneyProgressDetails(progress.Voyager);
+  const farPointProgress = getJourneyProgressDetails(progress['Far Point Trail']);
+
   return (
     <aside className="journey-summary" aria-label="Project route summary">
       <div className="summary-item summary-voyager">
         <span className="summary-kicker journey-voyager">Voyager</span>
         <span className="summary-label">New Zealand to Santiago de Compostela</span>
         <span className="summary-progress-text">
-          <strong>1,000 km</strong> of 20,038 km completed <strong>(5%)</strong>
+          <strong>{voyagerProgress.distanceLabel}</strong> of 20,038 km completed{' '}
+          <strong>({voyagerProgress.percentLabel})</strong>
         </span>
         <span className="summary-progress" aria-hidden="true">
-          <span className="summary-progress-fill summary-progress-voyager" />
+          <span
+            className="summary-progress-fill summary-progress-voyager"
+            style={{ width: voyagerProgress.progressWidth }}
+          />
         </span>
       </div>
       <div className="summary-item summary-far-point">
         <span className="summary-kicker journey-far-point">Far Point Trail</span>
         <span className="summary-label">Santiago de Compostela to New Zealand</span>
         <span className="summary-progress-text">
-          <strong>1,000 km</strong> of 20,038 km completed <strong>(5%)</strong>
+          <strong>{farPointProgress.distanceLabel}</strong> of 20,038 km completed{' '}
+          <strong>({farPointProgress.percentLabel})</strong>
         </span>
         <span className="summary-progress" aria-hidden="true">
-          <span className="summary-progress-fill summary-progress-far-point" />
+          <span
+            className="summary-progress-fill summary-progress-far-point"
+            style={{ width: farPointProgress.progressWidth }}
+          />
         </span>
       </div>
       <div className="summary-route">
@@ -3702,6 +4421,9 @@ function App() {
   const hasMovedMapControl = useRef(false);
   const [selectedActivity, setSelectedActivity] =
     useState<SelectedProjectActivity | null>(null);
+  const [activityPanelMode, setActivityPanelMode] =
+    useState<ActivityPanelMode>('story');
+  const [allProjectActivities, setAllProjectActivities] = useState<ProjectActivity[]>([]);
   const [selectedActivityAnimationKey, setSelectedActivityAnimationKey] = useState(0);
   const [mobileMode, setMobileMode] = useState<MobileMode>('project');
   const [showMapHandleHint, setShowMapHandleHint] = useState(true);
@@ -3716,7 +4438,57 @@ function App() {
     useState<string | null>(null);
   const [mapProgressFocusActivityKey, setMapProgressFocusActivityKey] = useState(0);
   const [showLogoLightbox, setShowLogoLightbox] = useState(false);
+  const [isGlobeReady, setIsGlobeReady] = useState(false);
   const logoUrl = `${import.meta.env.BASE_URL}ProjectFarPoint.png`;
+  const progressPositionsByActivityId = useMemo(() => {
+    return new globalThis.Map(
+      createProgressPositions(allProjectActivities).map((progressPosition) => [
+        progressPosition.activity.id,
+        progressPosition,
+      ]),
+    );
+  }, [allProjectActivities]);
+  const journeyProgress = useMemo(
+    () => createJourneyProgressSummary(allProjectActivities),
+    [allProjectActivities],
+  );
+  const animatedJourneyProgress = useAnimatedJourneyProgress(
+    journeyProgress,
+    isGlobeReady,
+  );
+  const selectedProgressPosition = selectedActivity
+    ? progressPositionsByActivityId.get(selectedActivity.id) ?? null
+    : null;
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    if (!supabase) {
+      setAllProjectActivities([]);
+      return;
+    }
+
+    supabase
+      .from('project_activities')
+      .select(projectActivitySelectColumns)
+      .then(({ data, error }) => {
+        if (isCancelled) {
+          return;
+        }
+
+        if (error) {
+          console.error('Could not load progress activities.', error);
+          setAllProjectActivities([]);
+          return;
+        }
+
+        setAllProjectActivities((data ?? []) as ProjectActivity[]);
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
 
   const applyMobileMapPreset = useCallback(
     (preset: typeof mobileMapStoryPreset | typeof mobileMapFocusPreset) => {
@@ -3811,6 +4583,22 @@ function App() {
 
   const handleActivitySelect = useCallback((activity: SelectedProjectActivity) => {
     setSelectedActivity(activity);
+    setActivityPanelMode('story');
+    setSelectedActivityAnimationKey((currentKey) => currentKey + 1);
+    setMobileMode('project');
+    setDesktopContentTab('story');
+    window.requestAnimationFrame(() => {
+      if (window.matchMedia('(max-width: 980px)').matches) {
+        storyPanelRef.current?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'start',
+        });
+      }
+    });
+  }, []);
+  const handleProgressActivitySelect = useCallback((activity: SelectedProjectActivity) => {
+    setSelectedActivity(activity);
+    setActivityPanelMode('progress');
     setSelectedActivityAnimationKey((currentKey) => currentKey + 1);
     setMobileMode('project');
     setDesktopContentTab('story');
@@ -3825,20 +4613,27 @@ function App() {
   }, []);
   const handleSearchActivitySelect = useCallback((activity: ProjectActivity) => {
     setSelectedActivity(activity);
+    setActivityPanelMode('story');
     setSelectedActivityAnimationKey((currentKey) => currentKey + 1);
     setMapFocusActivityId(activity.id);
     setMapFocusActivityKey((currentKey) => currentKey + 1);
   }, []);
   const handleActivityFocus = useCallback((activityId: string) => {
+    setActivityPanelMode('story');
     setMapFocusActivityId(activityId);
     setMapFocusActivityKey((currentKey) => currentKey + 1);
   }, []);
   const handleProgressPositionFocus = useCallback((activityId: string) => {
+    setActivityPanelMode('progress');
     setMapProgressFocusActivityId(activityId);
     setMapProgressFocusActivityKey((currentKey) => currentKey + 1);
   }, []);
   const handleBackToIntro = useCallback(() => {
     setSelectedActivity(null);
+    setActivityPanelMode('story');
+  }, []);
+  const handleGlobeReadyChange = useCallback((isReady: boolean) => {
+    setIsGlobeReady(isReady);
   }, []);
   const handleDesktopContentTabChange = useCallback((nextTab: DesktopContentTab) => {
     setDesktopContentTab(nextTab);
@@ -3969,9 +4764,19 @@ function App() {
           </button>
         </div>
         <article className={`intro${desktopContentTab === 'search' ? ' intro-hidden-desktop' : ''}`}>
-          {selectedActivity ? (
+          {selectedActivity && activityPanelMode === 'progress' ? (
+            <ProgressStory
+              key={`${selectedActivity.id}-${selectedActivityAnimationKey}-progress`}
+              activity={selectedActivity}
+              progressPosition={selectedProgressPosition}
+              onBack={handleBackToIntro}
+              onFocusActivity={handleActivityFocus}
+              onFocusProgressPosition={handleProgressPositionFocus}
+              isArriving
+            />
+          ) : selectedActivity ? (
             <ActivityStory
-              key={`${selectedActivity.id}-${selectedActivityAnimationKey}`}
+              key={`${selectedActivity.id}-${selectedActivityAnimationKey}-story`}
               activity={selectedActivity}
               onBack={handleBackToIntro}
               onFocusActivity={handleActivityFocus}
@@ -3984,7 +4789,7 @@ function App() {
                 Project Far Point is a geo-blog documenting my attempt to
                 travel a cumulative distance equal to the circumference of the
                 Earth: 40,076 kilometers. Over the course of a decade or more,
-                thousands of walks, backpacking trips, paddling adventures,
+                thousands of walks, backpacking trips, kayak adventures,
                 ski tours, and snowshoe excursions will become the real-world
                 building blocks of two imagined journeys that together circle
                 the globe: <strong className="journey-voyager">Voyager</strong>{' '}
@@ -4036,7 +4841,7 @@ function App() {
           <SearchPanel onActivitySelect={handleSearchActivitySelect} />
         </div>
         <div className="mobile-mode-content mobile-progress-content">
-          <JourneySummary />
+          <JourneySummary progress={animatedJourneyProgress} />
         </div>
         <div className="mobile-mode-content mobile-donate-content">
           <CharityPanel />
@@ -4047,7 +4852,7 @@ function App() {
       </section>
       <section className="experience-panel" aria-label="Project progress and map">
         <div className="experience-top">
-          <JourneySummary />
+          <JourneySummary progress={animatedJourneyProgress} />
           <CharityPanel />
         </div>
         <div className="globe-panel" aria-label="Interactive 3D globe">
@@ -4069,7 +4874,10 @@ function App() {
             focusActivityKey={mapFocusActivityKey}
             focusProgressActivityId={mapProgressFocusActivityId}
             focusProgressActivityKey={mapProgressFocusActivityKey}
+            journeyProgress={animatedJourneyProgress}
             onActivitySelect={handleActivitySelect}
+            onGlobeReadyChange={handleGlobeReadyChange}
+            onProgressActivitySelect={handleProgressActivitySelect}
           />
         </div>
       </section>
