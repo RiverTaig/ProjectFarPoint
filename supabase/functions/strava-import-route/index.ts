@@ -7,13 +7,16 @@ import { reverseGeocodeStartLocation } from '../_shared/geocode.ts';
 
 type Coordinate = [number, number] | [number, number, number];
 
-const maxWalkingSpeedMetersPerSecond = 4.5;
-
 type ActivityMetadata = {
   startedAt?: string;
   trailName?: string;
   pfpType?: string;
   textDescription?: string;
+};
+
+type Stream = {
+  type?: string;
+  data?: unknown[];
 };
 
 function cleanText(value: unknown) {
@@ -93,74 +96,27 @@ function simplifyCoordinates(coordinates: Coordinate[], tolerance: number): Coor
   return [...left.slice(0, -1), ...right];
 }
 
-function distanceMeters(start: Coordinate, end: Coordinate) {
-  const [lon1, lat1] = start;
-  const [lon2, lat2] = end;
-  const latDifference = (Math.PI / 180) * (lat2 - lat1);
-  const lonDifference = (Math.PI / 180) * (lon2 - lon1);
-  const lat1Radians = (Math.PI / 180) * lat1;
-  const lat2Radians = (Math.PI / 180) * lat2;
-  const haversine =
-    Math.sin(latDifference / 2) ** 2 +
-    Math.cos(lat1Radians) *
-      Math.cos(lat2Radians) *
-      Math.sin(lonDifference / 2) ** 2;
-
-  return 2 * 6371008.8 * Math.asin(Math.min(1, Math.sqrt(haversine)));
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-
-function removeImpossibleSpeedSpikes(
-  coordinates: Coordinate[],
-  timeData: number[] | undefined,
-) {
-  if (!timeData || coordinates.length < 3 || timeData.length !== coordinates.length) {
-    return coordinates;
+function findStream(streams: unknown, type: string) {
+  if (!streams || typeof streams !== 'object') {
+    return undefined;
   }
 
-  const cleanedCoordinates: Coordinate[] = [];
-
-  for (let index = 0; index < coordinates.length; index += 1) {
-    const previous = cleanedCoordinates[cleanedCoordinates.length - 1];
-    const current = coordinates[index];
-    const next = coordinates[index + 1];
-    const previousTime = timeData[index - 1];
-    const currentTime = timeData[index];
-    const nextTime = timeData[index + 1];
-
-    if (
-      previous &&
-      next &&
-      isFiniteNumber(previousTime) &&
-      isFiniteNumber(currentTime) &&
-      isFiniteNumber(nextTime)
-    ) {
-      const previousSeconds = currentTime - previousTime;
-      const nextSeconds = nextTime - currentTime;
-      const skipSeconds = nextTime - previousTime;
-      const previousDistance = distanceMeters(previous, current);
-      const nextDistance = distanceMeters(current, next);
-      const skipDistance = distanceMeters(previous, next);
-      const previousSpeed = previousSeconds > 0 ? previousDistance / previousSeconds : 0;
-      const nextSpeed = nextSeconds > 0 ? nextDistance / nextSeconds : 0;
-      const skipSpeed = skipSeconds > 0 ? skipDistance / skipSeconds : 0;
-
-      if (
-        previousSpeed > maxWalkingSpeedMetersPerSecond &&
-        nextSpeed > maxWalkingSpeedMetersPerSecond &&
-        skipSpeed <= maxWalkingSpeedMetersPerSecond
-      ) {
-        continue;
-      }
-    }
-
-    cleanedCoordinates.push(current);
+  if (!Array.isArray(streams)) {
+    return (streams as Record<string, Stream>)[type]?.data;
   }
 
-  return cleanedCoordinates;
+  return streams.find((stream: Stream) => stream.type === type)?.data;
+}
+
+async function createStravaError(response: Response, fallbackMessage: string) {
+  const responseText = await response.text().catch(() => '');
+  const detail = responseText.slice(0, 500);
+
+  return new Error(
+    detail
+      ? `${fallbackMessage} Strava returned ${response.status}: ${detail}`
+      : `${fallbackMessage} Strava returned ${response.status}.`,
+  );
 }
 
 Deno.serve(async (request) => {
@@ -180,21 +136,30 @@ Deno.serve(async (request) => {
     }
 
     const user = await getAuthorizedUser(request);
-    const { activityId, metadata = {} } = (await request.json()) as {
-      activityId?: number | string;
+    const { routeId, metadata = {} } = (await request.json()) as {
+      routeId?: number | string;
       metadata?: ActivityMetadata;
     };
 
-    if (!activityId) {
+    if (!routeId) {
       return Response.json(
-        { error: 'Activity ID is required.' },
+        { error: 'Route ID is required.' },
+        { status: 400, headers },
+      );
+    }
+
+    const routeIdString = String(routeId).trim();
+
+    if (!/^\d+$/.test(routeIdString)) {
+      return Response.json(
+        { error: 'Route ID must be a number.' },
         { status: 400, headers },
       );
     }
 
     const { connection, serviceClient } = await getFreshStravaConnection(user.id);
-    const activityResponse = await fetch(
-      `https://www.strava.com/api/v3/activities/${activityId}`,
+    const routeResponse = await fetch(
+      `https://www.strava.com/api/v3/routes/${routeIdString}`,
       {
         headers: {
           Authorization: `Bearer ${connection.access_token}`,
@@ -202,18 +167,19 @@ Deno.serve(async (request) => {
       },
     );
 
-    if (!activityResponse.ok) {
-      throw new Error('Could not load Strava activity details.');
+    if (!routeResponse.ok) {
+      throw await createStravaError(
+        routeResponse,
+        'Could not load Strava route details.',
+      );
     }
 
-    const activity = await activityResponse.json();
-    const pfpType = cleanPfpType(metadata.pfpType);
-    const startedAt = cleanTimestamp(metadata.startedAt) ?? activity.start_date;
+    const route = await routeResponse.json();
     const streamsUrl = new URL(
-      `https://www.strava.com/api/v3/activities/${activityId}/streams`,
+      `https://www.strava.com/api/v3/routes/${routeIdString}/streams`,
     );
 
-    streamsUrl.searchParams.set('keys', 'latlng,altitude,time');
+    streamsUrl.searchParams.set('keys', 'latlng,altitude,distance');
     streamsUrl.searchParams.set('key_by_type', 'true');
 
     const streamsResponse = await fetch(streamsUrl, {
@@ -223,34 +189,41 @@ Deno.serve(async (request) => {
     });
 
     if (!streamsResponse.ok) {
-      throw new Error('Could not load Strava activity geometry.');
+      throw await createStravaError(
+        streamsResponse,
+        'Could not load Strava route geometry.',
+      );
     }
 
     const streams = await streamsResponse.json();
-    const latLngData = streams.latlng?.data as [number, number][] | undefined;
-    const altitudeData = streams.altitude?.data as number[] | undefined;
-    const timeData = streams.time?.data as number[] | undefined;
+    const latLngData = findStream(streams, 'latlng') as [number, number][] | undefined;
+    const altitudeData = findStream(streams, 'altitude') as number[] | undefined;
 
     if (!latLngData?.length) {
-      throw new Error('This activity does not include route geometry.');
+      throw new Error('This route does not include route geometry.');
     }
 
-    const rawCoordinates: Coordinate[] = latLngData.map(([latitude, longitude], index) => {
+    const coordinates: Coordinate[] = latLngData.map(([latitude, longitude], index) => {
       const altitude = altitudeData?.[index];
 
       return typeof altitude === 'number'
         ? [longitude, latitude, altitude]
         : [longitude, latitude];
     });
-    const coordinates = removeImpossibleSpeedSpikes(rawCoordinates, timeData);
 
     if (coordinates.length < 2) {
-      throw new Error('This activity does not include enough usable route geometry.');
+      throw new Error('This route does not include enough usable geometry.');
     }
+
     const geometry = {
       type: 'LineString',
       coordinates,
     };
+    const pfpType = cleanPfpType(metadata.pfpType);
+    const startedAt =
+      cleanTimestamp(metadata.startedAt) ??
+      cleanTimestamp(route.created_at) ??
+      new Date().toISOString();
     const startLocation = await reverseGeocodeStartLocation(coordinates[0]);
     let distanceMadeGood: number | null = null;
 
@@ -259,10 +232,10 @@ Deno.serve(async (request) => {
         await serviceClient.rpc('pfp_distance_made_good_km', {
           new_geometry_geojson: geometry,
           new_started_at: startedAt,
-          new_source: 'strava',
-          new_source_activity_id: Number(activity.id),
+          new_source: 'strava_route',
+          new_source_activity_id: routeIdString,
           threshold_meters: 15,
-          new_distance_meters: activity.distance,
+          new_distance_meters: route.distance,
         });
 
       if (distanceMadeGoodError) {
@@ -277,23 +250,23 @@ Deno.serve(async (request) => {
       .upsert(
         {
           owner_user_id: user.id,
-          source: 'strava',
-          source_activity_id: Number(activity.id),
-          strava_type: 'Activity',
-          strava_url: `https://www.strava.com/activities/${activity.id}`,
-          name: activity.name,
-          sport_type: activity.sport_type ?? activity.type,
+          source: 'strava_route',
+          source_activity_id: routeIdString,
+          strava_type: 'Route',
+          strava_url: `https://www.strava.com/routes/${routeIdString}`,
+          name: route.name,
+          sport_type: 'Strava Route',
           started_at: startedAt,
-          distance_meters: activity.distance,
-          moving_time_seconds: activity.moving_time,
-          elapsed_time_seconds: activity.elapsed_time,
-          total_elevation_gain_meters: activity.total_elevation_gain,
+          distance_meters: route.distance,
+          moving_time_seconds: route.estimated_moving_time,
+          elapsed_time_seconds: route.estimated_moving_time,
+          total_elevation_gain_meters: route.elevation_gain,
           city: startLocation.city,
           state: startLocation.state,
           province: startLocation.province,
           country: startLocation.country,
           continent: startLocation.continent,
-          corrected_distance: cleanNumber(Number(activity.distance) / 1000),
+          corrected_distance: cleanNumber(Number(route.distance) / 1000),
           distance_made_good: distanceMadeGood,
           trail_name: cleanText(metadata.trailName),
           pfp_type: pfpType,
@@ -311,7 +284,7 @@ Deno.serve(async (request) => {
             type: 'LineString',
             coordinates: simplifyCoordinates(coordinates, 0.001),
           },
-          raw_activity: activity,
+          raw_activity: route,
           updated_at: new Date().toISOString(),
         },
         {

@@ -1,5 +1,11 @@
-import { StrictMode, useCallback, useEffect, useRef, useState } from 'react';
-import type { CSSProperties, ChangeEvent, FormEvent, ReactNode } from 'react';
+import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type {
+  CSSProperties,
+  ChangeEvent,
+  FormEvent,
+  ReactNode,
+  TouchEvent,
+} from 'react';
 import { createRoot } from 'react-dom/client';
 import '@arcgis/core/assets/esri/themes/dark/main.css';
 import Camera from '@arcgis/core/Camera.js';
@@ -7,6 +13,8 @@ import Graphic from '@arcgis/core/Graphic.js';
 import GraphicsLayer from '@arcgis/core/layers/GraphicsLayer.js';
 import Map from '@arcgis/core/Map.js';
 import SceneView from '@arcgis/core/views/SceneView.js';
+import type { ResourceHandle } from '@arcgis/core/core/Handles.js';
+import type LayerView from '@arcgis/core/views/layers/LayerView.js';
 import type { Session } from '@supabase/supabase-js';
 import { supabase } from './supabaseClient';
 import './styles.css';
@@ -22,20 +30,25 @@ type ProjectActivity = {
   id: string;
   name: string;
   sport_type: string | null;
+  started_at: string | null;
   pfp_type: 'Voyager' | 'Far Point Trail' | null;
   trail_name: string | null;
   city: string | null;
   state: string | null;
   province: string | null;
   country: string | null;
-  corrected_distance: number | null;
-  distance_made_good: number | null;
+  continent: string | null;
+  corrected_distance: number | string | null;
+  distance_made_good: number | string | null;
+  strava_type: 'Activity' | 'Route' | null;
+  strava_url: string | null;
   text_description: string | null;
-  geometry_simplified_medium: {
+  progress_story?: string | null;
+  geometry_simplified_medium?: {
     type: 'LineString';
     coordinates: number[][];
   } | null;
-  geometry_geojson: {
+  geometry_geojson?: {
     type: 'LineString';
     coordinates: number[][];
   } | null;
@@ -46,16 +59,32 @@ type SelectedProjectActivity = Pick<
   | 'id'
   | 'name'
   | 'sport_type'
+  | 'started_at'
   | 'pfp_type'
   | 'trail_name'
   | 'city'
   | 'state'
   | 'province'
   | 'country'
+  | 'continent'
   | 'corrected_distance'
   | 'distance_made_good'
+  | 'strava_type'
+  | 'strava_url'
   | 'text_description'
+  | 'progress_story'
 >;
+
+type ProjectActivityImage = {
+  id: string;
+  activity_id: string;
+  name: string;
+  storage_bucket: string;
+  storage_path: string;
+  caption: string | null;
+  alt_text: string | null;
+  sort_order: number;
+};
 
 type StravaActivity = {
   id: number;
@@ -70,17 +99,124 @@ type StravaActivity = {
   location_country: string | null;
 };
 
+type StravaRoute = {
+  id: string;
+  name: string;
+  distance: number;
+  elevation_gain: number | null;
+  estimated_moving_time: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+  type: number | null;
+  sub_type: number | null;
+};
+
+type StravaImportKind = 'activity' | 'route';
+type StravaImportItem = StravaActivity | StravaRoute;
+
 type ActivityMetadata = {
-  city: string;
-  state: string;
-  province: string;
-  country: string;
-  correctedDistance: string;
-  distanceMadeGood: string;
+  startedAt: string;
   trailName: string;
   pfpType: 'Voyager' | 'Far Point Trail';
   textDescription: string;
 };
+
+type ActivityImageInput = {
+  id: string;
+  name: string;
+  caption: string;
+  file: File | null;
+};
+
+type ProjectPathFilter = 'Voyager' | 'Far Point Trail' | '';
+type SearchSortField = 'date' | 'distance' | 'name' | 'location';
+type SearchSortDirection = 'asc' | 'desc';
+type ActivityPanelMode = 'story' | 'progress';
+
+type SearchPanelProps = {
+  onActivitySelect: (activity: ProjectActivity) => void;
+};
+
+type ProgressPath = 'Voyager' | 'Far Point Trail';
+
+type ProgressPosition = {
+  activity: ProjectActivity;
+  progressKilometers: number;
+  position: LatLon;
+};
+
+type JourneyProgressSummary = Record<ProgressPath, number>;
+
+type NearbyPlaceLookup =
+  | { status: 'idle' | 'loading' }
+  | { status: 'ready'; label: string }
+  | { status: 'error' };
+
+type ArcgisReverseGeocodeResponse = {
+  address?: {
+    Match_addr?: string;
+    City?: string;
+    Subregion?: string;
+    Region?: string;
+    CntryName?: string;
+    CountryCode?: string;
+  };
+  location?: {
+    x?: number;
+    y?: number;
+  };
+  error?: {
+    message?: string;
+  };
+};
+
+type ArcgisAddressCandidate = {
+  address?: string;
+  location?: {
+    x?: number;
+    y?: number;
+  };
+  attributes?: {
+    PlaceName?: string;
+    City?: string;
+    Region?: string;
+    CntryName?: string;
+    CountryCode?: string;
+  };
+};
+
+type ArcgisAddressCandidatesResponse = {
+  candidates?: ArcgisAddressCandidate[];
+  error?: {
+    message?: string;
+  };
+};
+
+type ArcgisWorldCityFeature = {
+  attributes?: {
+    CITY_NAME?: string;
+    CNTRY_NAME?: string;
+    POP?: number;
+  };
+  geometry?: {
+    x?: number;
+    y?: number;
+  };
+};
+
+type ArcgisWorldCitiesResponse = {
+  features?: ArcgisWorldCityFeature[];
+  error?: {
+    message?: string;
+  };
+};
+
+const projectActivitySelectColumns =
+  'id,name,sport_type,started_at,pfp_type,trail_name,city,state,province,country,continent,corrected_distance,distance_made_good,strava_type,strava_url,text_description,geometry_simplified_medium';
+const arcgisWorldGeocodeServiceUrl =
+  'https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer';
+const arcgisWorldCitiesLayerUrl =
+  'https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/World_Cities/FeatureServer/0';
 
 const voyagerStart: LatLon = {
   latitude: -42.880468,
@@ -103,8 +239,11 @@ const calgary: LatLon = {
 };
 
 const halfJourneyKilometers = 20038;
-const sampleProgressKilometers = 1000;
+const earthCircumferenceKilometers = halfJourneyKilometers * 2;
+const journeyProgressAnimationKilometersPerSecond = 1000;
 const guideRouteWidth = 3.4;
+const progressMarkersVisibleWidthKilometers = 300;
+const progressLabelsVisibleWidthKilometers = 100;
 
 const voyagerAntipode: LatLon = {
   latitude: -voyagerStart.latitude,
@@ -250,24 +389,66 @@ function createFarPointTrailPath() {
   return createAntipodalRoutePath(voyagerStart, everestAntipode);
 }
 
-function createVoyagerProgressPath() {
+function clampJourneyProgressKilometers(distanceKilometers: number) {
+  return Math.min(halfJourneyKilometers, Math.max(0, distanceKilometers));
+}
+
+function createVoyagerProgressPath(distanceKilometers: number) {
   return createAntipodalRoutePath(
     voyagerStart,
     everestSummit,
-    Math.PI * (sampleProgressKilometers / halfJourneyKilometers),
+    Math.PI * (clampJourneyProgressKilometers(distanceKilometers) / halfJourneyKilometers),
   );
 }
 
-function createFarPointProgressPath() {
+function createFarPointProgressPath(distanceKilometers: number) {
   return createAntipodalRoutePath(
     voyagerAntipode,
     everestAntipode,
-    Math.PI * (sampleProgressKilometers / halfJourneyKilometers),
+    Math.PI * (clampJourneyProgressKilometers(distanceKilometers) / halfJourneyKilometers),
   );
 }
 
+function getGreatCirclePosition(
+  startPoint: LatLon,
+  waypoint: LatLon,
+  distanceKilometers: number,
+) {
+  const start = toVector(startPoint);
+  const waypointVector = toVector(waypoint);
+  const direction = normalize([
+    waypointVector[0] - dot(waypointVector, start) * start[0],
+    waypointVector[1] - dot(waypointVector, start) * start[1],
+    waypointVector[2] - dot(waypointVector, start) * start[2],
+  ]);
+  const angle = Math.PI * (distanceKilometers / halfJourneyKilometers);
+
+  return toLatLon(greatCirclePoint(start, direction, angle));
+}
+
+function getProgressPosition(path: ProgressPath, distanceKilometers: number) {
+  const wrappedDistance =
+    ((distanceKilometers % earthCircumferenceKilometers) +
+      earthCircumferenceKilometers) %
+    earthCircumferenceKilometers;
+  const isPastFirstHalf = wrappedDistance > halfJourneyKilometers;
+  const segmentDistance = isPastFirstHalf
+    ? wrappedDistance - halfJourneyKilometers
+    : wrappedDistance;
+
+  if (path === 'Voyager') {
+    return isPastFirstHalf
+      ? getGreatCirclePosition(voyagerAntipode, everestAntipode, segmentDistance)
+      : getGreatCirclePosition(voyagerStart, everestSummit, segmentDistance);
+  }
+
+  return isPastFirstHalf
+    ? getGreatCirclePosition(voyagerStart, everestSummit, segmentDistance)
+    : getGreatCirclePosition(voyagerAntipode, everestAntipode, segmentDistance);
+}
+
 function createActivityPaths(activity: ProjectActivity) {
-  const geometry = activity.geometry_geojson ?? activity.geometry_simplified_medium;
+  const geometry = activity.geometry_simplified_medium ?? activity.geometry_geojson;
 
   if (!geometry?.coordinates?.length) {
     return [];
@@ -294,20 +475,372 @@ function createActivityLineSymbol(activity: ProjectActivity, isSelected = false)
   } as const;
 }
 
-function createActivityMetadata(activity?: StravaActivity): ActivityMetadata {
-  const country = activity?.location_country ?? '';
-  const region = activity?.location_state ?? '';
+function getKilometerValue(value: number | string | null) {
+  if (value === null || value === '') {
+    return 0;
+  }
+
+  const numberValue = typeof value === 'string' ? Number(value) : value;
+
+  return Number.isFinite(numberValue) ? Math.max(numberValue, 0) : 0;
+}
+
+function getActivityStartTime(activity: ProjectActivity) {
+  if (!activity.started_at) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const time = new Date(activity.started_at).getTime();
+
+  return Number.isNaN(time) ? Number.POSITIVE_INFINITY : time;
+}
+
+function createProgressPositions(activities: ProjectActivity[]) {
+  const positions: ProgressPosition[] = [];
+  const activitiesByPath = new globalThis.Map<ProgressPath, ProjectActivity[]>();
+
+  activities.forEach((activity) => {
+    if (activity.pfp_type !== 'Voyager' && activity.pfp_type !== 'Far Point Trail') {
+      return;
+    }
+
+    const pathActivities = activitiesByPath.get(activity.pfp_type) ?? [];
+    pathActivities.push(activity);
+    activitiesByPath.set(activity.pfp_type, pathActivities);
+  });
+
+  activitiesByPath.forEach((pathActivities, path) => {
+    let runningTotal = 0;
+
+    pathActivities
+      .sort((left, right) => {
+        const dateDifference = getActivityStartTime(left) - getActivityStartTime(right);
+
+        if (dateDifference !== 0) {
+          return dateDifference;
+        }
+
+        return left.id.localeCompare(right.id);
+      })
+      .forEach((activity) => {
+        runningTotal += getKilometerValue(activity.distance_made_good);
+        positions.push({
+          activity,
+          progressKilometers: runningTotal,
+          position: getProgressPosition(path, runningTotal),
+        });
+      });
+  });
+
+  return positions;
+}
+
+function createJourneyProgressSummary(activities: ProjectActivity[]): JourneyProgressSummary {
+  return activities.reduce<JourneyProgressSummary>(
+    (summary, activity) => {
+      if (activity.pfp_type !== 'Voyager' && activity.pfp_type !== 'Far Point Trail') {
+        return summary;
+      }
+
+      summary[activity.pfp_type] += getKilometerValue(activity.distance_made_good);
+
+      return summary;
+    },
+    {
+      Voyager: 0,
+      'Far Point Trail': 0,
+    },
+  );
+}
+
+function useAnimatedJourneyProgress(
+  targetProgress: JourneyProgressSummary,
+  isEnabled: boolean,
+) {
+  const [animatedProgress, setAnimatedProgress] = useState<JourneyProgressSummary>({
+    Voyager: 0,
+    'Far Point Trail': 0,
+  });
+  const animatedProgressRef = useRef(animatedProgress);
+
+  useEffect(() => {
+    if (!isEnabled) {
+      const emptyProgress = {
+        Voyager: 0,
+        'Far Point Trail': 0,
+      };
+
+      animatedProgressRef.current = emptyProgress;
+      setAnimatedProgress(emptyProgress);
+      return;
+    }
+
+    const prefersReducedMotion = window.matchMedia(
+      '(prefers-reduced-motion: reduce)',
+    ).matches;
+
+    if (prefersReducedMotion) {
+      animatedProgressRef.current = targetProgress;
+      setAnimatedProgress(targetProgress);
+      return;
+    }
+
+    let animationFrame = 0;
+    let previousTimestamp: number | null = null;
+    const progressPaths: ProgressPath[] = ['Voyager', 'Far Point Trail'];
+
+    function step(timestamp: number) {
+      if (previousTimestamp === null) {
+        previousTimestamp = timestamp;
+      }
+
+      const elapsedSeconds = (timestamp - previousTimestamp) / 1000;
+      const maximumStepKilometers =
+        elapsedSeconds * journeyProgressAnimationKilometersPerSecond;
+      previousTimestamp = timestamp;
+      let isComplete = true;
+      const nextProgress = progressPaths.reduce<JourneyProgressSummary>(
+        (next, path) => {
+          const currentDistance = animatedProgressRef.current[path];
+          const targetDistance = targetProgress[path];
+          const remainingDistance = targetDistance - currentDistance;
+
+          if (Math.abs(remainingDistance) <= maximumStepKilometers) {
+            next[path] = targetDistance;
+            return next;
+          }
+
+          isComplete = false;
+          next[path] =
+            currentDistance + Math.sign(remainingDistance) * maximumStepKilometers;
+
+          return next;
+        },
+        {
+          Voyager: 0,
+          'Far Point Trail': 0,
+        },
+      );
+
+      animatedProgressRef.current = nextProgress;
+      setAnimatedProgress(nextProgress);
+
+      if (!isComplete) {
+        animationFrame = window.requestAnimationFrame(step);
+      }
+    }
+
+    animationFrame = window.requestAnimationFrame(step);
+
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+    };
+  }, [isEnabled, targetProgress]);
+
+  return animatedProgress;
+}
+
+function createProgressMarkerSymbol(activity: ProjectActivity, isSelected = false) {
+  const isFarPoint = activity.pfp_type === 'Far Point Trail';
+  const fillColor = isSelected
+    ? '#ffdc46'
+    : isFarPoint
+      ? '#a6e031'
+      : '#33c6ff';
+  const haloColor = isFarPoint ? '#24340d' : '#082b3d';
+  const size = isSelected ? 30 : 24;
+  const pinSvg = `
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 44">
+      <path d="M16 42 10.6 27.6C5.2 25.5 2 20.7 2 15.4 2 7.8 8.3 2 16 2s14 5.8 14 13.4c0 5.3-3.2 10.1-8.6 12.2L16 42Z" fill="${fillColor}" stroke="#020611" stroke-width="3"/>
+      <circle cx="16" cy="15.5" r="6.1" fill="#fffef8" fill-opacity="0.92" stroke="${haloColor}" stroke-width="2"/>
+    </svg>
+  `.trim();
 
   return {
-    city: activity?.location_city ?? '',
-    state: country && country !== 'Canada' ? region : '',
-    province: country === 'Canada' ? region : '',
-    country,
-    correctedDistance: activity ? (activity.distance / 1000).toFixed(2) : '',
-    distanceMadeGood: '',
+    type: 'picture-marker',
+    url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(pinSvg)}`,
+    width: size,
+    height: Math.round(size * 1.375),
+    yoffset: Math.round((size * 1.375) / 2),
+  } as const;
+}
+
+function createProgressLabelSymbol(activity: ProjectActivity) {
+  return {
+    type: 'text',
+    text: activity.trail_name || activity.name,
+    color: activity.pfp_type === 'Far Point Trail'
+      ? [219, 255, 127, 1]
+      : [155, 228, 255, 1],
+    haloColor: [2, 6, 17, 0.96],
+    haloSize: 1.4,
+    font: {
+      family: 'Inter, Arial, sans-serif',
+      size: 10.5,
+      weight: 'bold',
+    },
+    yoffset: 14,
+  } as const;
+}
+
+function getHaversineKilometers(start: LatLon, end: LatLon) {
+  const earthRadiusKilometers = 6371.0088;
+  const startLatitude = degreesToRadians(start.latitude);
+  const endLatitude = degreesToRadians(end.latitude);
+  const latitudeDelta = degreesToRadians(end.latitude - start.latitude);
+  const longitudeDelta = degreesToRadians(end.longitude - start.longitude);
+  const haversine =
+    Math.sin(latitudeDelta / 2) ** 2 +
+    Math.cos(startLatitude) *
+      Math.cos(endLatitude) *
+      Math.sin(longitudeDelta / 2) ** 2;
+
+  return (
+    2 *
+    earthRadiusKilometers *
+    Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine))
+  );
+}
+
+function getViewWidthKilometers(view: SceneView) {
+  if (!view.width || !view.height) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const centerY = view.height / 2;
+  const leftPoint = view.toMap({ x: 0, y: centerY });
+  const rightPoint = view.toMap({ x: view.width, y: centerY });
+
+  if (!leftPoint || !rightPoint) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const leftLatitude = leftPoint.latitude;
+  const leftLongitude = leftPoint.longitude;
+  const rightLatitude = rightPoint.latitude;
+  const rightLongitude = rightPoint.longitude;
+
+  if (
+    typeof leftLatitude !== 'number' ||
+    typeof leftLongitude !== 'number' ||
+    typeof rightLatitude !== 'number' ||
+    typeof rightLongitude !== 'number' ||
+    !Number.isFinite(leftLatitude) ||
+    !Number.isFinite(leftLongitude) ||
+    !Number.isFinite(rightLatitude) ||
+    !Number.isFinite(rightLongitude)
+  ) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  return getHaversineKilometers(
+    {
+      latitude: leftLatitude,
+      longitude: leftLongitude,
+    },
+    {
+      latitude: rightLatitude,
+      longitude: rightLongitude,
+    },
+  );
+}
+
+function formatDateTimeLocalInput(value?: string | null) {
+  if (!value) {
+    return '';
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+
+  const offsetDate = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+
+  return offsetDate.toISOString().slice(0, 16);
+}
+
+function localDateTimeInputToIso(value: string) {
+  if (!value) {
+    return '';
+  }
+
+  const date = new Date(value);
+
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString();
+}
+
+function createActivityMetadata(item?: StravaImportItem): ActivityMetadata {
+  const isActivity = Boolean(item && 'start_date' in item);
+  const activity = isActivity ? (item as StravaActivity) : null;
+  const route = !isActivity ? (item as StravaRoute | undefined) : null;
+
+  return {
+    startedAt: formatDateTimeLocalInput(activity?.start_date ?? route?.created_at),
     trailName: '',
     pfpType: 'Voyager',
     textDescription: '',
+  };
+}
+
+function prepareActivityMetadata(metadata: ActivityMetadata): ActivityMetadata {
+  return {
+    ...metadata,
+    startedAt: localDateTimeInputToIso(metadata.startedAt),
+  };
+}
+
+async function getFunctionErrorMessage(error: unknown, fallbackMessage: string) {
+  const context =
+    typeof error === 'object' && error !== null && 'context' in error
+      ? (error as { context?: Response }).context
+      : null;
+
+  if (context) {
+    try {
+      const body = await context.clone().json();
+      const message = body?.error ?? body?.message;
+
+      if (typeof message === 'string' && message.trim()) {
+        return message;
+      }
+    } catch {
+      try {
+        const text = await context.clone().text();
+
+        if (text.trim()) {
+          return text;
+        }
+      } catch {
+        // Fall through to the generic error below.
+      }
+    }
+  }
+
+  return error instanceof Error && error.message !== 'Edge Function returned a non-2xx status code'
+    ? error.message
+    : fallbackMessage;
+}
+
+function extractStravaRouteId(value: string) {
+  const trimmedValue = value.trim();
+
+  if (!trimmedValue) {
+    return '';
+  }
+
+  const routeIdMatch = trimmedValue.match(/(?:^|\/routes\/)(\d+)(?:[/?#]|$)/);
+
+  return routeIdMatch?.[1] ?? trimmedValue;
+}
+
+function createActivityImageInput(): ActivityImageInput {
+  return {
+    id: crypto.randomUUID(),
+    name: '',
+    caption: '',
+    file: null,
   };
 }
 
@@ -321,18 +854,375 @@ function createLoremIpsumDescription() {
   return paragraphs.join('\n\n').slice(0, 1000);
 }
 
-function formatKilometers(value: number | null) {
-  if (typeof value !== 'number') {
+function formatKilometers(value: number | string | null) {
+  if (value === null || value === '') {
     return null;
   }
 
-  return `${value.toLocaleString(undefined, {
+  const numberValue = typeof value === 'string' ? Number(value) : value;
+
+  if (!Number.isFinite(numberValue)) {
+    return null;
+  }
+
+  return `${numberValue.toLocaleString(undefined, {
     maximumFractionDigits: 2,
   })} km`;
 }
 
-const youtubeUrlPattern = /https?:\/\/(?:www\.|m\.)?(?:youtube\.com|youtu\.be)\/[^\s<>"']+/gi;
+function formatCoordinate(value: number, directionA: string, directionB: string) {
+  const direction = value >= 0 ? directionA : directionB;
+
+  return `${Math.abs(value).toFixed(5)}° ${direction}`;
+}
+
+function formatLatLon(position: LatLon) {
+  return `${formatCoordinate(position.latitude, 'N', 'S')} / ${formatCoordinate(
+    position.longitude,
+    'E',
+    'W',
+  )}`;
+}
+
+function formatPercent(value: number) {
+  return `${value.toLocaleString(undefined, {
+    maximumFractionDigits: 2,
+  })}%`;
+}
+
+function getGreatCircleDistanceKilometers(from: LatLon, to: LatLon) {
+  const fromVector = toVector(from);
+  const toPointVector = toVector(to);
+  const clampedDot = Math.min(1, Math.max(-1, dot(fromVector, toPointVector)));
+  const earthRadiusKilometers = earthCircumferenceKilometers / (2 * Math.PI);
+
+  return Math.acos(clampedDot) * earthRadiusKilometers;
+}
+
+function cleanCountryName(value: string) {
+  return value
+    .replace(/^Kingdom of\s+/i, '')
+    .replace(/^Republic of\s+/i, '')
+    .replace(/^The\s+/i, '')
+    .replace(/\s+Republic$/i, '')
+    .replace(/\s+Kingdom$/i, '')
+    .trim();
+}
+
+function formatNearbyPlaceLabel(
+  searchPosition: LatLon,
+  placePosition: LatLon,
+  city: string,
+  country: string,
+) {
+  const distanceKilometers = getGreatCircleDistanceKilometers(searchPosition, placePosition);
+  const distanceLabel = formatKilometers(distanceKilometers) ?? '0 km';
+
+  return `${distanceLabel} from ${city}, ${cleanCountryName(country)}`;
+}
+
+function getCandidatePlace(position: LatLon, candidate: ArcgisAddressCandidate) {
+  const attributes = candidate.attributes;
+  const country = attributes?.CntryName || attributes?.CountryCode;
+  const placeName = attributes?.PlaceName || attributes?.City || candidate.address;
+  const longitude = candidate.location?.x;
+  const latitude = candidate.location?.y;
+
+  if (
+    !placeName ||
+    !country ||
+    cleanCountryName(placeName) === cleanCountryName(country) ||
+    typeof longitude !== 'number' ||
+    typeof latitude !== 'number' ||
+    !Number.isFinite(longitude) ||
+    !Number.isFinite(latitude)
+  ) {
+    return null;
+  }
+
+  const placePosition = {
+    latitude,
+    longitude,
+  };
+
+  return {
+    distanceKilometers: getGreatCircleDistanceKilometers(position, placePosition),
+    label: formatNearbyPlaceLabel(position, placePosition, placeName, country),
+  };
+}
+
+function getWorldCityPlace(position: LatLon, feature: ArcgisWorldCityFeature) {
+  const city = feature.attributes?.CITY_NAME;
+  const country = feature.attributes?.CNTRY_NAME;
+  const longitude = feature.geometry?.x;
+  const latitude = feature.geometry?.y;
+
+  if (
+    !city ||
+    !country ||
+    typeof longitude !== 'number' ||
+    typeof latitude !== 'number' ||
+    !Number.isFinite(longitude) ||
+    !Number.isFinite(latitude)
+  ) {
+    return null;
+  }
+
+  const placePosition = {
+    latitude,
+    longitude,
+  };
+
+  return {
+    distanceKilometers: getGreatCircleDistanceKilometers(position, placePosition),
+    label: formatNearbyPlaceLabel(position, placePosition, city, country),
+  };
+}
+
+function getLongitudeRanges(centerLongitude: number, radiusDegrees: number) {
+  if (radiusDegrees >= 180) {
+    return [[-180, 180]];
+  }
+
+  const minimumLongitude = centerLongitude - radiusDegrees;
+  const maximumLongitude = centerLongitude + radiusDegrees;
+
+  if (minimumLongitude < -180) {
+    return [
+      [minimumLongitude + 360, 180],
+      [-180, maximumLongitude],
+    ];
+  }
+
+  if (maximumLongitude > 180) {
+    return [
+      [minimumLongitude, 180],
+      [-180, maximumLongitude - 360],
+    ];
+  }
+
+  return [[minimumLongitude, maximumLongitude]];
+}
+
+async function queryWorldCityCandidates(
+  position: LatLon,
+  radiusKilometers: number,
+  signal: AbortSignal,
+) {
+  const latitudeRadiusDegrees = Math.min(90, radiusKilometers / 111.32);
+  const latitudeCosine = Math.cos(degreesToRadians(position.latitude));
+  const longitudeRadiusDegrees =
+    Math.abs(latitudeCosine) < 0.08
+      ? 180
+      : Math.min(180, radiusKilometers / (111.32 * Math.abs(latitudeCosine)));
+  const minimumLatitude = Math.max(-90, position.latitude - latitudeRadiusDegrees);
+  const maximumLatitude = Math.min(90, position.latitude + latitudeRadiusDegrees);
+  const longitudeRanges = getLongitudeRanges(position.longitude, longitudeRadiusDegrees);
+  const features = await Promise.all(
+    longitudeRanges.map(async ([minimumLongitude, maximumLongitude]) => {
+      const params = new URLSearchParams({
+        f: 'json',
+        geometry: [
+          minimumLongitude,
+          minimumLatitude,
+          maximumLongitude,
+          maximumLatitude,
+        ].join(','),
+        geometryType: 'esriGeometryEnvelope',
+        inSR: '4326',
+        outFields: 'CITY_NAME,CNTRY_NAME,POP',
+        outSR: '4326',
+        resultRecordCount: '2000',
+        returnGeometry: 'true',
+        spatialRel: 'esriSpatialRelIntersects',
+        where: '1=1',
+      });
+      const response = await fetch(
+        `${arcgisWorldCitiesLayerUrl}/query?${params.toString()}`,
+        { signal },
+      );
+
+      if (!response.ok) {
+        throw new Error('Could not lookup world cities.');
+      }
+
+      const data = (await response.json()) as ArcgisWorldCitiesResponse;
+
+      if (data.error) {
+        throw new Error(data.error.message ?? 'Could not lookup world cities.');
+      }
+
+      return data.features ?? [];
+    }),
+  );
+
+  return features.flat();
+}
+
+async function lookupNearbyCity(position: LatLon, signal: AbortSignal) {
+  const params = new URLSearchParams({
+    f: 'json',
+    category: 'City',
+    langCode: 'en',
+    location: `${position.longitude},${position.latitude}`,
+    maxLocations: '12',
+    outFields: 'PlaceName,City,Region,CntryName,CountryCode',
+  });
+  const response = await fetch(
+    `${arcgisWorldGeocodeServiceUrl}/findAddressCandidates?${params.toString()}`,
+    { signal },
+  );
+
+  if (!response.ok) {
+    throw new Error('Could not lookup nearby place.');
+  }
+
+  const data = (await response.json()) as ArcgisAddressCandidatesResponse;
+
+  if (data.error) {
+    throw new Error(data.error.message ?? 'Could not lookup nearby place.');
+  }
+
+  const candidatePlaces = (data.candidates ?? [])
+    .map((candidate) => getCandidatePlace(position, candidate))
+    .filter((place): place is { distanceKilometers: number; label: string } =>
+      Boolean(place),
+    )
+    .sort((left, right) => left.distanceKilometers - right.distanceKilometers);
+
+  if (!candidatePlaces.length) {
+    throw new Error('Could not lookup nearby city.');
+  }
+
+  return candidatePlaces[0].label;
+}
+
+async function lookupNearestWorldCity(position: LatLon, signal: AbortSignal) {
+  const searchRadiiKilometers = [
+    100,
+    250,
+    500,
+    1000,
+    2000,
+    4000,
+    8000,
+    12000,
+    halfJourneyKilometers,
+  ];
+
+  for (const radiusKilometers of searchRadiiKilometers) {
+    const candidatePlaces = (await queryWorldCityCandidates(
+      position,
+      radiusKilometers,
+      signal,
+    ))
+      .map((feature) => getWorldCityPlace(position, feature))
+      .filter((place): place is { distanceKilometers: number; label: string } =>
+        Boolean(place),
+      )
+      .sort((left, right) => left.distanceKilometers - right.distanceKilometers);
+
+    if (candidatePlaces.length) {
+      return candidatePlaces[0].label;
+    }
+  }
+
+  throw new Error('Could not lookup nearest world city.');
+}
+
+async function reverseLookupNearbyPlace(position: LatLon, signal: AbortSignal) {
+  const params = new URLSearchParams({
+    f: 'json',
+    langCode: 'en',
+    location: `${position.longitude},${position.latitude}`,
+    outSR: '4326',
+  });
+  const response = await fetch(
+    `${arcgisWorldGeocodeServiceUrl}/reverseGeocode?${params.toString()}`,
+    { signal },
+  );
+
+  if (!response.ok) {
+    throw new Error('Could not lookup nearby place.');
+  }
+
+  const data = (await response.json()) as ArcgisReverseGeocodeResponse;
+
+  if (data.error) {
+    throw new Error(data.error.message ?? 'Could not lookup nearby place.');
+  }
+
+  const address = data.address;
+  const location = data.location;
+  const city = address?.City || address?.Subregion || address?.Region || address?.Match_addr;
+  const country = address?.CntryName || address?.CountryCode;
+  const longitude = location?.x;
+  const latitude = location?.y;
+
+  if (
+    !city ||
+    !country ||
+    typeof longitude !== 'number' ||
+    typeof latitude !== 'number' ||
+    !Number.isFinite(longitude) ||
+    !Number.isFinite(latitude)
+  ) {
+    throw new Error('Could not lookup nearby place.');
+  }
+
+  return formatNearbyPlaceLabel(
+    position,
+    {
+      latitude,
+      longitude,
+    },
+    city,
+    country,
+  );
+}
+
+async function lookupNearbyPlace(position: LatLon, signal: AbortSignal) {
+  try {
+    return await lookupNearbyCity(position, signal);
+  } catch (error) {
+    if (signal.aborted) {
+      throw error;
+    }
+  }
+
+  try {
+    return await reverseLookupNearbyPlace(position, signal);
+  } catch (error) {
+    if (signal.aborted) {
+      throw error;
+    }
+
+    return lookupNearestWorldCity(position, signal);
+  }
+}
+
+function formatActivityDateTime(value: string | null) {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return date.toLocaleString(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
+}
+
+const videoShortcodeOrYouTubeUrlPattern =
+  /\{(Video|Image|ImageCarousel|ExternalImage)\s+([^{}]+)\}|https?:\/\/(?:www\.|m\.)?(?:youtube\.com|youtu\.be)\/[^\s<>"']+/gi;
+const quotedAttributePattern = /(\w+)="([^"]*)"/g;
 const trailingUrlPunctuationPattern = /[),.;:!?]+$/;
+const imageNamePattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const mobileMapControlMinX = 6;
 const mobileMapControlMaxX = 94;
 const mobileMapOpacityMin = 0.25;
@@ -420,6 +1310,45 @@ function splitTrailingUrlPunctuation(url: string) {
   };
 }
 
+function parseQuotedAttributes(value: string) {
+  const attributes: Record<string, string> = {};
+
+  for (const match of value.matchAll(quotedAttributePattern)) {
+    attributes[match[1]] = match[2];
+  }
+
+  return attributes;
+}
+
+function getImageFileExtension(file: File) {
+  const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
+
+  if (['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(extension)) {
+    return extension === 'jpeg' ? 'jpg' : extension;
+  }
+
+  switch (file.type) {
+    case 'image/png':
+      return 'png';
+    case 'image/webp':
+      return 'webp';
+    case 'image/gif':
+      return 'gif';
+    default:
+      return 'jpg';
+  }
+}
+
+function getActivityImagePublicUrl(image: ProjectActivityImage) {
+  if (!supabase) {
+    return '';
+  }
+
+  return supabase.storage
+    .from(image.storage_bucket)
+    .getPublicUrl(image.storage_path).data.publicUrl;
+}
+
 function setBasemapLabelsVisible(map: Map, isVisible: boolean) {
   map.basemap?.referenceLayers?.forEach((layer) => {
     layer.visible = isVisible;
@@ -473,14 +1402,45 @@ async function playOpeningGlobeAnimation(view: SceneView) {
 }
 
 type GlobeViewProps = {
+  session: Session | null;
   selectedActivityId: string | null;
+  focusActivityId: string | null;
+  focusActivityKey: number;
+  focusProgressActivityId: string | null;
+  focusProgressActivityKey: number;
+  journeyProgress: JourneyProgressSummary;
   onActivitySelect: (activity: SelectedProjectActivity) => void;
+  onGlobeReadyChange: (isReady: boolean) => void;
+  onProgressActivitySelect: (activity: SelectedProjectActivity) => void;
 };
 
-function GlobeView({ selectedActivityId, onActivitySelect }: GlobeViewProps) {
+function GlobeView({
+  session,
+  selectedActivityId,
+  focusActivityId,
+  focusActivityKey,
+  focusProgressActivityId,
+  focusProgressActivityKey,
+  journeyProgress,
+  onActivitySelect,
+  onGlobeReadyChange,
+  onProgressActivitySelect,
+}: GlobeViewProps) {
   const sceneNode = useRef<HTMLDivElement | null>(null);
+  const viewRef = useRef<SceneView | null>(null);
   const importedActivityGraphics = useRef(new globalThis.Map<string, Graphic>());
+  const progressActivityGraphics = useRef(new globalThis.Map<string, Graphic>());
+  const journeyProgressRef = useRef(journeyProgress);
+  const voyagerProgressGraphic = useRef<Graphic | null>(null);
+  const farPointProgressGraphic = useRef<Graphic | null>(null);
+  const focusedProgressLayerRef = useRef<GraphicsLayer | null>(null);
   const selectedActivityGraphic = useRef<Graphic | null>(null);
+  const selectedProgressGraphic = useRef<Graphic | null>(null);
+  const [isGlobeReady, setIsGlobeReady] = useState(false);
+  const [isGeneratingTestActivity, setIsGeneratingTestActivity] = useState(false);
+  const [testGeneratorStatus, setTestGeneratorStatus] = useState('');
+  const [testGeneratorError, setTestGeneratorError] = useState('');
+  const loadingLogoUrl = `${import.meta.env.BASE_URL}ProjectFarPointLoader.png`;
 
   useEffect(() => {
     const previousGraphic = selectedActivityGraphic.current;
@@ -508,12 +1468,181 @@ function GlobeView({ selectedActivityId, onActivitySelect }: GlobeViewProps) {
   }, [selectedActivityId]);
 
   useEffect(() => {
+    const previousProgressGraphic = selectedProgressGraphic.current;
+
+    if (previousProgressGraphic) {
+      previousProgressGraphic.symbol = createProgressMarkerSymbol(
+        previousProgressGraphic.attributes.activity as ProjectActivity,
+      );
+      selectedProgressGraphic.current = null;
+    }
+
+    if (!selectedActivityId) {
+      return;
+    }
+
+    const nextProgressGraphic = progressActivityGraphics.current.get(selectedActivityId);
+
+    if (nextProgressGraphic) {
+      nextProgressGraphic.symbol = createProgressMarkerSymbol(
+        nextProgressGraphic.attributes.activity as ProjectActivity,
+        true,
+      );
+      selectedProgressGraphic.current = nextProgressGraphic;
+    }
+  }, [selectedActivityId]);
+
+  useEffect(() => {
+    if (!focusActivityId || focusActivityKey === 0) {
+      return;
+    }
+
+    const targetActivityId = focusActivityId;
+    let retryCount = 0;
+    let retryTimeout: number | null = null;
+
+    function focusActivity() {
+      const view = viewRef.current;
+      const graphic = importedActivityGraphics.current.get(targetActivityId);
+      const extent = graphic?.geometry?.extent;
+
+      if (!view || !extent) {
+        if (retryCount < 12) {
+          retryCount += 1;
+          retryTimeout = window.setTimeout(focusActivity, 250);
+        }
+
+        return;
+      }
+
+      focusedProgressLayerRef.current?.removeAll();
+      view.goTo(extent.expand(1.35), {
+        animate: true,
+        duration: 900,
+      }).catch(() => {
+        // The view may be interrupted by a user pan/zoom.
+      });
+    }
+
+    focusActivity();
+
+    return () => {
+      if (retryTimeout) {
+        window.clearTimeout(retryTimeout);
+      }
+    };
+  }, [focusActivityId, focusActivityKey]);
+
+  useEffect(() => {
+    if (!focusProgressActivityId || focusProgressActivityKey === 0) {
+      return;
+    }
+
+    const targetActivityId = focusProgressActivityId;
+    let retryCount = 0;
+    let retryTimeout: number | null = null;
+
+    function focusProgressPosition() {
+      const view = viewRef.current;
+      const graphic = progressActivityGraphics.current.get(targetActivityId);
+      const focusedProgressLayer = focusedProgressLayerRef.current;
+
+      if (!view || !graphic?.geometry || !focusedProgressLayer) {
+        if (retryCount < 12) {
+          retryCount += 1;
+          retryTimeout = window.setTimeout(focusProgressPosition, 250);
+        }
+
+        return;
+      }
+
+      const activity = graphic.attributes.activity as ProjectActivity;
+
+      focusedProgressLayer.removeAll();
+      focusedProgressLayer.add(
+        new Graphic({
+          geometry: graphic.geometry,
+          symbol: createProgressMarkerSymbol(activity, true),
+          attributes: {
+            activityId: activity.id,
+            activity,
+            isFocusedProgressPosition: true,
+          },
+        }),
+      );
+      focusedProgressLayer.add(
+        new Graphic({
+          geometry: graphic.geometry,
+          symbol: createProgressLabelSymbol(activity),
+          attributes: {
+            activityId: activity.id,
+            activity,
+            isFocusedProgressLabel: true,
+          },
+        }),
+      );
+      view.goTo(
+        {
+          target: graphic.geometry,
+          scale: 18000000,
+          tilt: 0,
+        },
+        {
+          animate: true,
+          duration: 1200,
+        },
+      ).catch(() => {
+        // The view may be interrupted by a user pan/zoom.
+      });
+    }
+
+    focusProgressPosition();
+
+    return () => {
+      if (retryTimeout) {
+        window.clearTimeout(retryTimeout);
+      }
+    };
+  }, [focusProgressActivityId, focusProgressActivityKey]);
+
+  useEffect(() => {
+    journeyProgressRef.current = journeyProgress;
+
+    if (voyagerProgressGraphic.current) {
+      voyagerProgressGraphic.current.geometry = {
+        type: 'polyline',
+        paths: createVoyagerProgressPath(journeyProgress.Voyager),
+        spatialReference: {
+          wkid: 4326,
+        },
+      };
+      voyagerProgressGraphic.current.attributes.distance =
+        formatKilometers(journeyProgress.Voyager) ?? '0 km';
+    }
+
+    if (farPointProgressGraphic.current) {
+      farPointProgressGraphic.current.geometry = {
+        type: 'polyline',
+        paths: createFarPointProgressPath(journeyProgress['Far Point Trail']),
+        spatialReference: {
+          wkid: 4326,
+        },
+      };
+      farPointProgressGraphic.current.attributes.distance =
+        formatKilometers(journeyProgress['Far Point Trail']) ?? '0 km';
+    }
+  }, [journeyProgress]);
+
+  useEffect(() => {
     if (!sceneNode.current) {
       return;
     }
 
+    setIsGlobeReady(false);
+    onGlobeReadyChange(false);
     let isDestroyed = false;
     let importedActivitiesLayer: GraphicsLayer | null = null;
+    const projectActivities = new globalThis.Map<string, ProjectActivity>();
 
     const map = new Map({
       basemap: 'hybrid',
@@ -525,6 +1654,27 @@ function GlobeView({ selectedActivityId, onActivitySelect }: GlobeViewProps) {
         mode: 'on-the-ground',
       },
     });
+    const progressMarkerLayer = new GraphicsLayer({
+      title: 'Progress positions',
+      visible: false,
+      elevationInfo: {
+        mode: 'on-the-ground',
+      },
+    });
+    const progressLabelLayer = new GraphicsLayer({
+      title: 'Progress position labels',
+      visible: false,
+      elevationInfo: {
+        mode: 'on-the-ground',
+      },
+    });
+    const focusedProgressLayer = new GraphicsLayer({
+      title: 'Focused progress position',
+      elevationInfo: {
+        mode: 'on-the-ground',
+      },
+    });
+    focusedProgressLayerRef.current = focusedProgressLayer;
     const voyagerRoute = new Graphic({
       geometry: {
         type: 'polyline',
@@ -565,10 +1715,11 @@ function GlobeView({ selectedActivityId, onActivitySelect }: GlobeViewProps) {
         via: `${everestAntipode.latitude}, ${everestAntipode.longitude}`,
       },
     });
+    const currentJourneyProgress = journeyProgressRef.current;
     const voyagerProgress = new Graphic({
       geometry: {
         type: 'polyline',
-        paths: createVoyagerProgressPath(),
+        paths: createVoyagerProgressPath(currentJourneyProgress.Voyager),
         spatialReference: {
           wkid: 4326,
         },
@@ -580,13 +1731,13 @@ function GlobeView({ selectedActivityId, onActivitySelect }: GlobeViewProps) {
       },
       attributes: {
         name: 'Voyager progress',
-        distance: `${sampleProgressKilometers} km`,
+        distance: formatKilometers(currentJourneyProgress.Voyager) ?? '0 km',
       },
     });
     const farPointProgress = new Graphic({
       geometry: {
         type: 'polyline',
-        paths: createFarPointProgressPath(),
+        paths: createFarPointProgressPath(currentJourneyProgress['Far Point Trail']),
         spatialReference: {
           wkid: 4326,
         },
@@ -598,9 +1749,11 @@ function GlobeView({ selectedActivityId, onActivitySelect }: GlobeViewProps) {
       },
       attributes: {
         name: 'Far Point Trail progress',
-        distance: `${sampleProgressKilometers} km`,
+        distance: formatKilometers(currentJourneyProgress['Far Point Trail']) ?? '0 km',
       },
     });
+    voyagerProgressGraphic.current = voyagerProgress;
+    farPointProgressGraphic.current = farPointProgress;
     const cathedralMarker = new Graphic({
       geometry: {
         type: 'point',
@@ -709,14 +1862,120 @@ function GlobeView({ selectedActivityId, onActivitySelect }: GlobeViewProps) {
     voyagerRouteLayer.add(calgaryMarker);
     voyagerRouteLayer.add(calgaryLabel);
     map.add(voyagerRouteLayer);
+    map.add(progressMarkerLayer);
+    map.add(progressLabelLayer);
+    map.add(focusedProgressLayer);
+
+    function rebuildProgressGraphics() {
+      progressMarkerLayer.removeAll();
+      progressLabelLayer.removeAll();
+      progressActivityGraphics.current.clear();
+
+      createProgressPositions(Array.from(projectActivities.values())).forEach(
+        ({ activity, progressKilometers, position }) => {
+          const geometry = {
+            type: 'point',
+            longitude: position.longitude,
+            latitude: position.latitude,
+            spatialReference: {
+              wkid: 4326,
+            },
+          } as const;
+          const isSelected = activity.id === selectedActivityId;
+          const markerGraphic = new Graphic({
+            geometry,
+            symbol: createProgressMarkerSymbol(activity, isSelected),
+            attributes: {
+              activityId: activity.id,
+              name: activity.name,
+              progressKilometers,
+              activity,
+              isProgressPosition: true,
+            },
+          });
+          const labelGraphic = new Graphic({
+            geometry,
+            symbol: createProgressLabelSymbol(activity),
+            attributes: {
+              activityId: activity.id,
+              name: activity.name,
+              progressKilometers,
+              activity,
+              isProgressLabel: true,
+            },
+          });
+
+          progressActivityGraphics.current.set(activity.id, markerGraphic);
+          progressMarkerLayer.add(markerGraphic);
+          progressLabelLayer.add(labelGraphic);
+
+          if (isSelected) {
+            selectedProgressGraphic.current = markerGraphic;
+          }
+        },
+      );
+    }
+
+    function updateProgressLayerVisibility() {
+      const view = viewRef.current;
+
+      if (!view) {
+        return;
+      }
+
+      const widthKilometers = getViewWidthKilometers(view);
+      progressMarkerLayer.visible =
+        widthKilometers <= progressMarkersVisibleWidthKilometers;
+      progressLabelLayer.visible =
+        widthKilometers <= progressLabelsVisibleWidthKilometers;
+    }
+
+    function addProjectActivityGraphic(projectActivity: ProjectActivity) {
+      const paths = createActivityPaths(projectActivity);
+
+      if (!paths.length) {
+        return null;
+      }
+
+      if (!importedActivitiesLayer) {
+        importedActivitiesLayer = new GraphicsLayer({
+          title: 'Imported activities',
+          elevationInfo: {
+            mode: 'on-the-ground',
+          },
+        });
+        map.add(importedActivitiesLayer);
+      }
+
+      const activityGraphic = new Graphic({
+        geometry: {
+          type: 'polyline',
+          paths,
+          spatialReference: {
+            wkid: 4326,
+          },
+        },
+        symbol: createActivityLineSymbol(projectActivity),
+        attributes: {
+          activityId: projectActivity.id,
+          name: projectActivity.name,
+          sport_type: projectActivity.sport_type,
+          activity: projectActivity,
+        },
+      });
+
+      importedActivityGraphics.current.set(projectActivity.id, activityGraphic);
+      importedActivitiesLayer.add(activityGraphic);
+      projectActivities.set(projectActivity.id, projectActivity);
+
+      return activityGraphic;
+    }
 
     if (supabase) {
       supabase
         .from('project_activities')
-        .select(
-          'id,name,sport_type,pfp_type,trail_name,city,state,province,country,corrected_distance,distance_made_good,text_description,geometry_simplified_medium,geometry_geojson',
-        )
-        .not('geometry_geojson', 'is', null)
+        .select(projectActivitySelectColumns)
+        .or('geometry_simplified_medium.not.is.null,geometry_geojson.not.is.null')
         .then(({ data, error }) => {
           if (isDestroyed || error || !data?.length) {
             return;
@@ -729,36 +1988,11 @@ function GlobeView({ selectedActivityId, onActivitySelect }: GlobeViewProps) {
             },
           });
 
-          data.forEach((activity) => {
-            const projectActivity = activity as ProjectActivity;
-            const paths = createActivityPaths(projectActivity);
-
-            if (!paths.length) {
-              return;
-            }
-
-            const activityGraphic = new Graphic({
-              geometry: {
-                type: 'polyline',
-                paths,
-                spatialReference: {
-                  wkid: 4326,
-                },
-              },
-              symbol: createActivityLineSymbol(projectActivity),
-              attributes: {
-                activityId: projectActivity.id,
-                name: projectActivity.name,
-                sport_type: projectActivity.sport_type,
-                activity: projectActivity,
-              },
-            });
-
-            importedActivityGraphics.current.set(projectActivity.id, activityGraphic);
-            importedActivitiesLayer?.add(activityGraphic);
-          });
+          data.forEach((activity) => addProjectActivityGraphic(activity as ProjectActivity));
 
           map.add(importedActivitiesLayer);
+          rebuildProgressGraphics();
+          updateProgressLayerVisibility();
         });
     }
 
@@ -787,27 +2021,165 @@ function GlobeView({ selectedActivityId, onActivitySelect }: GlobeViewProps) {
         components: ['compass'],
       },
     });
-    setBasemapLabelsVisible(map, (view.zoom ?? 0) < 12);
-    const zoomHandle = view.watch('zoom', (zoom) => {
-      setBasemapLabelsVisible(map, zoom < 12);
-    });
+    viewRef.current = view;
+    setBasemapLabelsVisible(map, true);
+    const progressVisibilityHandle = view.watch('extent', updateProgressLayerVisibility);
+    const imageryLayerHandles: ResourceHandle[] = [];
+    let openingAnimationTimeout: number | null = null;
+    let initialImageryStableTimeout: number | null = null;
+    let initialImageryFallbackTimeout: number | null = null;
+    let hasStartedOpeningAnimation = false;
+    const startOpeningAnimation = () => {
+      if (isDestroyed || hasStartedOpeningAnimation) {
+        return;
+      }
+
+      hasStartedOpeningAnimation = true;
+      setIsGlobeReady(true);
+      onGlobeReadyChange(true);
+
+      openingAnimationTimeout = window.setTimeout(() => {
+        if (isDestroyed) {
+          return;
+        }
+
+        playOpeningGlobeAnimation(view).catch(() => {
+          // The animation may be interrupted if the user navigates away or moves the globe.
+        });
+      }, 280);
+    };
+    const waitForInitialImagery = async () => {
+      const basemapLayers = [
+        ...(map.basemap?.baseLayers?.toArray() ?? []),
+        ...(map.basemap?.referenceLayers?.toArray() ?? []),
+      ];
+
+      if (basemapLayers.length === 0) {
+        startOpeningAnimation();
+        return;
+      }
+
+      const layerViews = (
+        await Promise.all(
+          basemapLayers.map((layer) =>
+            view.whenLayerView(layer).catch(() => null),
+          ),
+        )
+      ).filter((layerView): layerView is LayerView => Boolean(layerView));
+
+      if (isDestroyed || layerViews.length === 0) {
+        startOpeningAnimation();
+        return;
+      }
+
+      const areInitialLayersReady = () =>
+        layerViews.every((layerView) => !layerView.updating);
+      const scheduleOpeningAfterStableImagery = () => {
+        if (initialImageryStableTimeout) {
+          window.clearTimeout(initialImageryStableTimeout);
+        }
+
+        initialImageryStableTimeout = window.setTimeout(
+          startOpeningAnimation,
+          2200,
+        );
+      };
+
+      layerViews.forEach((layerView) => {
+        imageryLayerHandles.push(
+          layerView.watch('updating', () => {
+            if (initialImageryStableTimeout) {
+              window.clearTimeout(initialImageryStableTimeout);
+              initialImageryStableTimeout = null;
+            }
+
+            if (areInitialLayersReady()) {
+              scheduleOpeningAfterStableImagery();
+            }
+          }),
+        );
+      });
+
+      if (areInitialLayersReady()) {
+        scheduleOpeningAfterStableImagery();
+      }
+    };
+
     view.when(() => {
       if (isDestroyed) {
         return;
       }
 
-      playOpeningGlobeAnimation(view).catch(() => {
-        // The animation may be interrupted if the user navigates away or moves the globe.
-      });
+      setIsGlobeReady(true);
+      onGlobeReadyChange(true);
+      updateProgressLayerVisibility();
+      waitForInitialImagery().catch(startOpeningAnimation);
+      initialImageryFallbackTimeout = window.setTimeout(
+        startOpeningAnimation,
+        30000,
+      );
     });
     const clickHandle = view.on('click', async (event) => {
-      if (!importedActivitiesLayer) {
+      if (!importedActivitiesLayer && progressMarkerLayer.graphics.length === 0) {
         return;
       }
 
       const hitTest = await view.hitTest(event, {
-        include: importedActivitiesLayer,
+        include: importedActivitiesLayer
+          ? [progressMarkerLayer, importedActivitiesLayer]
+          : progressMarkerLayer,
       });
+      const progressResult = hitTest.results.find((result) => {
+        const graphic = 'graphic' in result ? result.graphic : null;
+
+        return Boolean(graphic?.attributes?.isProgressPosition);
+      });
+      const progressGraphic =
+        progressResult && 'graphic' in progressResult
+          ? progressResult.graphic
+          : null;
+      const progressActivity = progressGraphic?.attributes?.activity as
+        | SelectedProjectActivity
+        | undefined;
+
+      if (progressGraphic && progressActivity) {
+        const progressGeometry = progressGraphic.geometry;
+
+        if (!progressGeometry) {
+          return;
+        }
+
+        focusedProgressLayer.removeAll();
+        const previousProgressGraphic = selectedProgressGraphic.current;
+
+        if (previousProgressGraphic && previousProgressGraphic !== progressGraphic) {
+          previousProgressGraphic.symbol = createProgressMarkerSymbol(
+            previousProgressGraphic.attributes.activity as ProjectActivity,
+          );
+        }
+
+        progressGraphic.symbol = createProgressMarkerSymbol(
+          progressGraphic.attributes.activity as ProjectActivity,
+          true,
+        );
+        selectedProgressGraphic.current = progressGraphic;
+        onProgressActivitySelect(progressActivity);
+        view.goTo(
+          {
+            target: progressGeometry,
+            scale: 140000,
+            tilt: 0,
+          },
+          {
+            animate: true,
+            duration: 900,
+          },
+        ).catch(() => {
+          // The view may be interrupted by a user pan/zoom.
+        });
+        return;
+      }
+
       const activityResult = hitTest.results.find((result) => {
         const graphic = 'graphic' in result ? result.graphic : null;
 
@@ -825,6 +2197,7 @@ function GlobeView({ selectedActivityId, onActivitySelect }: GlobeViewProps) {
         return;
       }
 
+      focusedProgressLayer.removeAll();
       const previousGraphic = selectedActivityGraphic.current;
 
       if (previousGraphic && previousGraphic !== graphic) {
@@ -840,18 +2213,140 @@ function GlobeView({ selectedActivityId, onActivitySelect }: GlobeViewProps) {
       selectedActivityGraphic.current = graphic;
       onActivitySelect(activity);
     });
+    const testActivityButton = document.createElement('button');
+
+    testActivityButton.className = 'map-test-activity-button';
+    testActivityButton.type = 'button';
+    testActivityButton.textContent = 'Generate Test Activity';
+    testActivityButton.addEventListener('click', async () => {
+      if (!supabase || !isProjectOwner(session)) {
+        return;
+      }
+
+      testActivityButton.disabled = true;
+      testActivityButton.textContent = 'Generating...';
+      setTestGeneratorStatus('');
+      setTestGeneratorError('');
+      setIsGeneratingTestActivity(true);
+
+      try {
+        const center = view.center;
+        const longitude = center?.longitude;
+        const latitude = center?.latitude;
+
+        if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+          throw new Error('Could not read the current map center.');
+        }
+
+        const { data, error } = await supabase.functions.invoke('generate-test-activity', {
+          body: {
+            latitude,
+            longitude,
+          },
+        });
+
+        if (error) {
+          throw new Error(
+            await getFunctionErrorMessage(error, 'Could not generate a test activity.'),
+          );
+        }
+
+        const projectActivity = data.activity as ProjectActivity | undefined;
+
+        if (!projectActivity) {
+          throw new Error('The generated activity was not returned.');
+        }
+
+        const graphic = addProjectActivityGraphic(projectActivity);
+        rebuildProgressGraphics();
+        updateProgressLayerVisibility();
+
+        if (graphic) {
+          if (selectedActivityGraphic.current) {
+            selectedActivityGraphic.current.symbol = createActivityLineSymbol(
+              selectedActivityGraphic.current.attributes.activity as ProjectActivity,
+            );
+          }
+
+          graphic.symbol = createActivityLineSymbol(projectActivity, true);
+          selectedActivityGraphic.current = graphic;
+        }
+
+        onActivitySelect(projectActivity);
+        setTestGeneratorStatus(`Generated ${projectActivity.name}.`);
+      } catch (error) {
+        setTestGeneratorError(
+          error instanceof Error ? error.message : 'Could not generate a test activity.',
+        );
+      } finally {
+        testActivityButton.disabled = false;
+        testActivityButton.textContent = 'Generate Test Activity';
+        setIsGeneratingTestActivity(false);
+      }
+    });
+
+    if (isProjectOwner(session)) {
+      view.ui.add(testActivityButton, 'top-right');
+    }
 
     return () => {
       isDestroyed = true;
       importedActivityGraphics.current.clear();
+      progressActivityGraphics.current.clear();
+      voyagerProgressGraphic.current = null;
+      farPointProgressGraphic.current = null;
+      focusedProgressLayer.removeAll();
       selectedActivityGraphic.current = null;
+      selectedProgressGraphic.current = null;
+      focusedProgressLayerRef.current = null;
+      viewRef.current = null;
+      onGlobeReadyChange(false);
+      if (openingAnimationTimeout) {
+        window.clearTimeout(openingAnimationTimeout);
+      }
+      if (initialImageryStableTimeout) {
+        window.clearTimeout(initialImageryStableTimeout);
+      }
+      if (initialImageryFallbackTimeout) {
+        window.clearTimeout(initialImageryFallbackTimeout);
+      }
+      imageryLayerHandles.forEach((handle) => handle.remove());
       clickHandle.remove();
-      zoomHandle.remove();
+      progressVisibilityHandle.remove();
+      testActivityButton.remove();
       view.destroy();
     };
-  }, [onActivitySelect]);
+  }, [onActivitySelect, onGlobeReadyChange, onProgressActivitySelect, session]);
 
-  return <div className="globe-view" ref={sceneNode} aria-label="3D globe" />;
+  return (
+    <div className={`globe-view-shell${isGlobeReady ? ' globe-view-ready' : ' globe-view-loading'}`}>
+      <div className="globe-view" ref={sceneNode} aria-label="3D globe" />
+      {!isGlobeReady && (
+        <div className="globe-loading-scrim" aria-live="polite">
+          <img
+            className="globe-loading-logo"
+            src={loadingLogoUrl}
+            alt="Project Far Point"
+          />
+          <p>
+            <span>Loading globe imagery</span>
+            <span className="globe-loading-dots" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </span>
+          </p>
+        </div>
+      )}
+      {isProjectOwner(session) && (
+        <div className="map-test-activity-status" aria-live="polite">
+          {isGeneratingTestActivity && <p>Generating test activity...</p>}
+          {testGeneratorStatus && <p>{testGeneratorStatus}</p>}
+          {testGeneratorError && <p className="map-test-activity-error">{testGeneratorError}</p>}
+        </div>
+      )}
+    </div>
+  );
 }
 
 type AuthMode = 'signIn' | 'signUp' | 'reset' | 'updatePassword';
@@ -1148,22 +2643,37 @@ function AddActivityPage({ session }: AddActivityPageProps) {
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
   const [isConnecting, setIsConnecting] = useState(false);
+  const [importKind, setImportKind] = useState<StravaImportKind>('activity');
   const [activities, setActivities] = useState<StravaActivity[]>([]);
+  const [routes, setRoutes] = useState<StravaRoute[]>([]);
   const [selectedActivityId, setSelectedActivityId] = useState<number | null>(null);
+  const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
+  const [manualRouteReference, setManualRouteReference] = useState('');
   const [activityMetadata, setActivityMetadata] = useState<ActivityMetadata>(
     createActivityMetadata(),
   );
-  const [isLoadingActivities, setIsLoadingActivities] = useState(false);
+  const [activityImages, setActivityImages] = useState<ActivityImageInput[]>([]);
+  const [isLoadingItems, setIsLoadingItems] = useState(false);
   const [isImportingActivity, setIsImportingActivity] = useState(false);
   const searchParams = new URLSearchParams(window.location.search);
   const stravaStatus = searchParams.get('strava');
   const selectedActivity = activities.find(
     (activity) => activity.id === selectedActivityId,
   );
+  const selectedRoute = routes.find((route) => route.id === selectedRouteId);
+  const selectedImportItem = importKind === 'activity' ? selectedActivity : selectedRoute;
+  const importKindLabel = importKind === 'activity' ? 'activity' : 'route';
+  const importKindLabelPlural = importKind === 'activity' ? 'activities' : 'routes';
+  const manualRouteId = extractStravaRouteId(manualRouteReference);
+  const routeIdToImport = manualRouteId || selectedRouteId;
+  const canShowImportForm =
+    (importKind === 'activity' && activities.length > 0) ||
+    importKind === 'route';
 
   useEffect(() => {
-    setActivityMetadata(createActivityMetadata(selectedActivity));
-  }, [selectedActivity]);
+    setActivityMetadata(createActivityMetadata(selectedImportItem));
+    setActivityImages([]);
+  }, [selectedImportItem]);
 
   function handleMetadataChange(
     event: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>,
@@ -1183,10 +2693,138 @@ function AddActivityPage({ session }: AddActivityPageProps) {
     }));
   }
 
-  async function handleLoadActivities() {
+  function handleAddImageInput() {
+    setActivityImages((currentImages) =>
+      currentImages.length >= 10 ? currentImages : [...currentImages, createActivityImageInput()],
+    );
+  }
+
+  function handleRemoveImageInput(imageId: string) {
+    setActivityImages((currentImages) =>
+      currentImages.filter((image) => image.id !== imageId),
+    );
+  }
+
+  function handleImageInputChange(
+    imageId: string,
+    field: 'name' | 'caption',
+    value: string,
+  ) {
+    setActivityImages((currentImages) =>
+      currentImages.map((image) =>
+        image.id === imageId ? { ...image, [field]: value } : image,
+      ),
+    );
+  }
+
+  function handleImageFileChange(imageId: string, file: File | null) {
+    setActivityImages((currentImages) =>
+      currentImages.map((image) =>
+        image.id === imageId ? { ...image, file } : image,
+      ),
+    );
+  }
+
+  function validateActivityImages() {
+    const names = new Set<string>();
+
+    for (const image of activityImages) {
+      const name = image.name.trim();
+
+      if (!name && !image.file && !image.caption.trim()) {
+        continue;
+      }
+
+      if (!name || !image.file) {
+        throw new Error('Each image needs both a name and a file.');
+      }
+
+      if (!imageNamePattern.test(name)) {
+        throw new Error(
+          'Image names must start with a letter or number and can only use letters, numbers, hyphens, and underscores.',
+        );
+      }
+
+      const normalizedName = name.toLowerCase();
+
+      if (names.has(normalizedName)) {
+        throw new Error(`Image name "${name}" is already used for this activity.`);
+      }
+
+      names.add(normalizedName);
+    }
+  }
+
+  async function uploadActivityImages(activityId: string) {
+    const readyImages = activityImages.filter((image) => image.name.trim() && image.file);
+
+    if (readyImages.length === 0) {
+      return 0;
+    }
+
+    if (!supabase) {
+      throw new Error('Supabase is not configured.');
+    }
+
+    for (const [index, image] of readyImages.entries()) {
+      const file = image.file;
+
+      if (!file) {
+        continue;
+      }
+
+      const name = image.name.trim();
+      const extension = getImageFileExtension(file);
+      const storagePath = `${activityId}/${name}.${extension}`;
+      const { error: uploadError } = await supabase.storage
+        .from('project-activity-images')
+        .upload(storagePath, file, {
+          cacheControl: '31536000',
+          contentType: file.type || undefined,
+          upsert: true,
+        });
+
+      if (uploadError) {
+        throw new Error(`Image upload failed for "${name}": ${uploadError.message}`);
+      }
+
+      const { error: imageError } = await supabase
+        .from('project_activity_images')
+        .upsert(
+          {
+            activity_id: activityId,
+            name,
+            storage_bucket: 'project-activity-images',
+            storage_path: storagePath,
+            caption: image.caption.trim() || null,
+            alt_text: image.caption.trim() || name,
+            sort_order: index,
+            content_type: file.type || null,
+            size_bytes: file.size,
+          },
+          {
+            onConflict: 'activity_id,name',
+          },
+        );
+
+      if (imageError) {
+        throw new Error(`Image metadata failed for "${name}": ${imageError.message}`);
+      }
+    }
+
+    return readyImages.length;
+  }
+
+  function handleImportKindChange(nextImportKind: StravaImportKind) {
     setStatus('');
     setError('');
-    setIsLoadingActivities(true);
+    setImportKind(nextImportKind);
+  }
+
+  async function handleLoadStravaItems() {
+    setStatus('');
+    setError('');
+    setIsLoadingItems(true);
 
     try {
       if (!supabase) {
@@ -1194,7 +2832,7 @@ function AddActivityPage({ session }: AddActivityPageProps) {
       }
 
       const { data, error: functionError } = await supabase.functions.invoke(
-        'strava-list-activities',
+        importKind === 'activity' ? 'strava-list-activities' : 'strava-list-routes',
         {
           body: {
             page: 1,
@@ -1204,20 +2842,31 @@ function AddActivityPage({ session }: AddActivityPageProps) {
       );
 
       if (functionError) {
-        throw functionError;
+        throw new Error(
+          await getFunctionErrorMessage(
+            functionError,
+            `Could not load Strava ${importKindLabelPlural}.`,
+          ),
+        );
       }
 
-      setActivities(data.activities ?? []);
-      setSelectedActivityId(data.activities?.[0]?.id ?? null);
-      setStatus(`Loaded ${data.activities?.length ?? 0} Strava activities.`);
+      if (importKind === 'activity') {
+        setActivities(data.activities ?? []);
+        setSelectedActivityId(data.activities?.[0]?.id ?? null);
+        setStatus(`Loaded ${data.activities?.length ?? 0} Strava activities.`);
+      } else {
+        setRoutes(data.routes ?? []);
+        setSelectedRouteId(data.routes?.[0]?.id ?? null);
+        setStatus(`Loaded ${data.routes?.length ?? 0} Strava routes.`);
+      }
     } catch (loadError) {
       setError(
         loadError instanceof Error
           ? loadError.message
-          : 'Could not load Strava activities.',
+          : `Could not load Strava ${importKindLabelPlural}.`,
       );
     } finally {
-      setIsLoadingActivities(false);
+      setIsLoadingItems(false);
     }
   }
 
@@ -1225,8 +2874,11 @@ function AddActivityPage({ session }: AddActivityPageProps) {
     setStatus('');
     setError('');
 
-    if (!selectedActivityId) {
-      setError('Choose an activity to import.');
+    if (
+      (importKind === 'activity' && !selectedActivityId) ||
+      (importKind === 'route' && !routeIdToImport)
+    ) {
+      setError(`Choose a ${importKindLabel} to import.`);
       return;
     }
 
@@ -1237,26 +2889,53 @@ function AddActivityPage({ session }: AddActivityPageProps) {
         throw new Error('Supabase is not configured.');
       }
 
+      validateActivityImages();
+
       const { data, error: functionError } = await supabase.functions.invoke(
-        'strava-import-activity',
+        importKind === 'activity' ? 'strava-import-activity' : 'strava-import-route',
         {
           body: {
-            activityId: selectedActivityId,
-            metadata: activityMetadata,
+            ...(importKind === 'activity'
+              ? { activityId: selectedActivityId }
+              : { routeId: routeIdToImport }),
+            metadata: prepareActivityMetadata(activityMetadata),
           },
         },
       );
 
       if (functionError) {
-        throw functionError;
+        throw new Error(
+          await getFunctionErrorMessage(
+            functionError,
+            `Could not import Strava ${importKindLabel}.`,
+          ),
+        );
       }
 
-      setStatus(`Imported ${data.activity?.name ?? 'activity'}.`);
+      const importedActivityId = data.activity?.id;
+
+      if (!importedActivityId) {
+        throw new Error('The imported activity id was not returned.');
+      }
+
+      const uploadedImageCount = await uploadActivityImages(importedActivityId);
+
+      const distanceMadeGood = formatKilometers(data.activity?.distance_made_good ?? null);
+      const imageMessage =
+        uploadedImageCount > 0
+          ? ` Uploaded ${uploadedImageCount} image${uploadedImageCount === 1 ? '' : 's'}.`
+          : '';
+      const importMessage =
+        data.activity?.pfp_type === 'Voyager' && distanceMadeGood
+          ? `Imported ${data.activity?.name ?? importKindLabel} with ${distanceMadeGood} made good.${imageMessage}`
+          : `Imported ${data.activity?.name ?? importKindLabel}.${imageMessage}`;
+
+      setStatus(importMessage);
     } catch (importError) {
       setError(
         importError instanceof Error
           ? importError.message
-          : 'Could not import Strava activity.',
+          : `Could not import Strava ${importKindLabel}.`,
       );
     } finally {
       setIsImportingActivity(false);
@@ -1287,7 +2966,12 @@ function AddActivityPage({ session }: AddActivityPageProps) {
       );
 
       if (functionError) {
-        throw functionError;
+        throw new Error(
+          await getFunctionErrorMessage(
+            functionError,
+            'Could not start Strava authorization.',
+          ),
+        );
       }
 
       if (!data?.authorizationUrl) {
@@ -1319,14 +3003,14 @@ function AddActivityPage({ session }: AddActivityPageProps) {
           <p className="eyebrow">Project Far Point Admin</p>
           <h1>Add Activity to Project Far Point</h1>
           <p className="activity-admin-copy">
-            Connect Strava, choose one completed activity, and import its
-            geometry for display on the globe.
+            Connect Strava, choose one completed activity or planned route, and
+            import its geometry for display on the globe.
           </p>
 
           {stravaStatus === 'connected' && (
             <p className="activity-success">
-              Strava is connected. The next step is listing your activities for
-              import.
+              Strava is connected. The next step is listing your activities or
+              routes for import.
             </p>
           )}
 
@@ -1340,38 +3024,108 @@ function AddActivityPage({ session }: AddActivityPageProps) {
           </button>
 
           <div className="activity-import-panel">
+            <div className="activity-import-kind" aria-label="Import source">
+              <button
+                className={
+                  importKind === 'activity'
+                    ? 'activity-import-kind-option activity-import-kind-option-active'
+                    : 'activity-import-kind-option'
+                }
+                type="button"
+                onClick={() => handleImportKindChange('activity')}
+              >
+                Activities
+              </button>
+              <button
+                className={
+                  importKind === 'route'
+                    ? 'activity-import-kind-option activity-import-kind-option-active'
+                    : 'activity-import-kind-option'
+                }
+                type="button"
+                onClick={() => handleImportKindChange('route')}
+              >
+                Routes
+              </button>
+            </div>
+
             <button
               className="activity-secondary-button"
               type="button"
-              onClick={handleLoadActivities}
-              disabled={isLoadingActivities || !isProjectOwner(session)}
+              onClick={handleLoadStravaItems}
+              disabled={isLoadingItems || !isProjectOwner(session)}
             >
-              {isLoadingActivities ? 'Loading activities...' : 'Load Strava activities'}
+              {isLoadingItems
+                ? `Loading ${importKindLabelPlural}...`
+                : `Load Strava ${importKindLabelPlural}`}
             </button>
 
-            {activities.length > 0 && (
+            {importKind === 'route' && (
+              <label className="manual-route-field">
+                <span>Route URL or ID</span>
+                <input
+                  value={manualRouteReference}
+                  onChange={(event) => setManualRouteReference(event.target.value)}
+                  placeholder="https://www.strava.com/routes/3434650877561151628"
+                />
+              </label>
+            )}
+
+            {canShowImportForm && (
               <>
-                <div className="activity-list" role="listbox" aria-label="Strava activities">
-                  {activities.map((activity) => (
-                    <button
-                      className={
-                        activity.id === selectedActivityId
-                          ? 'activity-option activity-option-selected'
-                          : 'activity-option'
-                      }
-                      type="button"
-                      key={activity.id}
-                      onClick={() => setSelectedActivityId(activity.id)}
-                    >
-                      <span>{activity.name}</span>
-                      <small>
-                        {new Date(activity.start_date).toLocaleDateString()} ·{' '}
-                        {(activity.distance / 1000).toFixed(2)} km ·{' '}
-                        {activity.sport_type}
-                      </small>
-                    </button>
-                  ))}
-                </div>
+                {((importKind === 'activity' && activities.length > 0) ||
+                  (importKind === 'route' && routes.length > 0)) && (
+                  <div
+                    className="activity-list"
+                    role="listbox"
+                    aria-label={`Strava ${importKindLabelPlural}`}
+                  >
+                    {importKind === 'activity'
+                      ? activities.map((activity) => (
+                          <button
+                            className={
+                              activity.id === selectedActivityId
+                                ? 'activity-option activity-option-selected'
+                                : 'activity-option'
+                            }
+                            type="button"
+                            key={activity.id}
+                            onClick={() => setSelectedActivityId(activity.id)}
+                          >
+                            <span>{activity.name}</span>
+                            <small>
+                              {new Date(activity.start_date).toLocaleDateString()} ·{' '}
+                              {(activity.distance / 1000).toFixed(2)} km ·{' '}
+                              {activity.sport_type}
+                            </small>
+                          </button>
+                        ))
+                      : routes.map((route) => (
+                          <button
+                            className={
+                              route.id === selectedRouteId && !manualRouteId
+                                ? 'activity-option activity-option-selected'
+                                : 'activity-option'
+                            }
+                            type="button"
+                            key={route.id}
+                            onClick={() => {
+                              setManualRouteReference('');
+                              setSelectedRouteId(route.id);
+                            }}
+                          >
+                            <span>{route.name}</span>
+                            <small>
+                              {(route.distance / 1000).toFixed(2)} km
+                              {route.elevation_gain !== null &&
+                                ` · ${Math.round(route.elevation_gain).toLocaleString()} m gain`}
+                              {route.updated_at &&
+                                ` · Updated ${new Date(route.updated_at).toLocaleDateString()}`}
+                            </small>
+                          </button>
+                        ))}
+                  </div>
+                )}
 
                 <div className="activity-metadata-form">
                   <label>
@@ -1397,61 +3151,11 @@ function AddActivityPage({ session }: AddActivityPageProps) {
                   </label>
 
                   <label>
-                    <span>City</span>
+                    <span>Started at</span>
                     <input
-                      name="city"
-                      value={activityMetadata.city}
-                      onChange={handleMetadataChange}
-                    />
-                  </label>
-
-                  <label>
-                    <span>State</span>
-                    <input
-                      name="state"
-                      value={activityMetadata.state}
-                      onChange={handleMetadataChange}
-                    />
-                  </label>
-
-                  <label>
-                    <span>Province</span>
-                    <input
-                      name="province"
-                      value={activityMetadata.province}
-                      onChange={handleMetadataChange}
-                    />
-                  </label>
-
-                  <label>
-                    <span>Country</span>
-                    <input
-                      name="country"
-                      value={activityMetadata.country}
-                      onChange={handleMetadataChange}
-                    />
-                  </label>
-
-                  <label>
-                    <span>Corrected distance (km)</span>
-                    <input
-                      name="correctedDistance"
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={activityMetadata.correctedDistance}
-                      onChange={handleMetadataChange}
-                    />
-                  </label>
-
-                  <label>
-                    <span>Distance made good (km)</span>
-                    <input
-                      name="distanceMadeGood"
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={activityMetadata.distanceMadeGood}
+                      name="startedAt"
+                      type="datetime-local"
+                      value={activityMetadata.startedAt}
                       onChange={handleMetadataChange}
                     />
                   </label>
@@ -1474,15 +3178,96 @@ function AddActivityPage({ session }: AddActivityPageProps) {
                   >
                     Generate Lorem Ipsum
                   </button>
+
+                  <div className="activity-image-upload-section">
+                    <div className="activity-image-upload-header">
+                      <span>Activity images</span>
+                      <button
+                        className="activity-secondary-button"
+                        type="button"
+                        onClick={handleAddImageInput}
+                        disabled={activityImages.length >= 10}
+                      >
+                        Add image
+                      </button>
+                    </div>
+
+                    {activityImages.length > 0 && (
+                      <div className="activity-image-upload-list">
+                        {activityImages.map((image, index) => (
+                          <div className="activity-image-upload-row" key={image.id}>
+                            <label>
+                              <span>Name</span>
+                              <input
+                                value={image.name}
+                                onChange={(event) =>
+                                  handleImageInputChange(
+                                    image.id,
+                                    'name',
+                                    event.target.value,
+                                  )
+                                }
+                                placeholder={index === 0 ? 'dog' : 'butterfly'}
+                              />
+                            </label>
+
+                            <label>
+                              <span>Caption</span>
+                              <input
+                                value={image.caption}
+                                onChange={(event) =>
+                                  handleImageInputChange(
+                                    image.id,
+                                    'caption',
+                                    event.target.value,
+                                  )
+                                }
+                                placeholder={index === 0 ? 'my dog' : 'pretty butterfly'}
+                              />
+                            </label>
+
+                            <label className="activity-image-file-field">
+                              <span>File</span>
+                              <input
+                                type="file"
+                                accept="image/jpeg,image/png,image/webp,image/gif"
+                                onChange={(event) =>
+                                  handleImageFileChange(
+                                    image.id,
+                                    event.target.files?.[0] ?? null,
+                                  )
+                                }
+                              />
+                            </label>
+
+                            <button
+                              className="activity-image-remove-button"
+                              type="button"
+                              onClick={() => handleRemoveImageInput(image.id)}
+                              aria-label={`Remove image ${index + 1}`}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 <button
                   className="strava-connect-button"
                   type="button"
                   onClick={handleImportActivity}
-                  disabled={isImportingActivity || !selectedActivityId}
+                  disabled={
+                    isImportingActivity ||
+                    (importKind === 'activity' && !selectedActivityId) ||
+                    (importKind === 'route' && !routeIdToImport)
+                  }
                 >
-                  {isImportingActivity ? 'Importing...' : 'Import selected activity'}
+                  {isImportingActivity
+                    ? 'Importing...'
+                    : `Import selected ${importKindLabel}`}
                 </button>
               </>
             )}
@@ -1491,7 +3276,7 @@ function AddActivityPage({ session }: AddActivityPageProps) {
           {!isProjectOwner(session) && (
             <p className="activity-error">
               Sign in as the Project Far Point owner to import Strava
-              activities.
+              activities or routes.
             </p>
           )}
           {status && <p className="activity-status">{status}</p>}
@@ -1505,22 +3290,269 @@ function AddActivityPage({ session }: AddActivityPageProps) {
 type ActivityStoryProps = {
   activity: SelectedProjectActivity;
   onBack: () => void;
+  onFocusActivity: (activityId: string) => void;
+  onFocusProgressPosition: (activityId: string) => void;
   isArriving?: boolean;
 };
 
 type MobileMode = 'project' | 'progress' | 'search' | 'donate';
+type DesktopContentTab = 'story' | 'search';
 
-function renderActivityParagraph(paragraph: string, paragraphIndex: number) {
+type ActivityImageCarouselProps = {
+  images: ProjectActivityImage[];
+  onOpenImage: (image: ProjectActivityImage) => void;
+};
+
+function ActivityImageCarousel({ images, onOpenImage }: ActivityImageCarouselProps) {
+  const [activeIndex, setActiveIndex] = useState(0);
+  const touchStartX = useRef<number | null>(null);
+  const safeActiveIndex = images.length > 0 ? activeIndex % images.length : 0;
+  const activeImage = images[safeActiveIndex];
+
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [images]);
+
+  if (!activeImage) {
+    return null;
+  }
+
+  function showPreviousImage() {
+    setActiveIndex((currentIndex) =>
+      images.length === 0
+        ? 0
+        : (currentIndex - 1 + images.length) % images.length,
+    );
+  }
+
+  function showNextImage() {
+    setActiveIndex((currentIndex) =>
+      images.length === 0 ? 0 : (currentIndex + 1) % images.length,
+    );
+  }
+
+  function handleTouchStart(event: TouchEvent<HTMLDivElement>) {
+    touchStartX.current = event.touches[0]?.clientX ?? null;
+  }
+
+  function handleTouchEnd(event: TouchEvent<HTMLDivElement>) {
+    const startX = touchStartX.current;
+    const endX = event.changedTouches[0]?.clientX ?? null;
+
+    touchStartX.current = null;
+
+    if (startX === null || endX === null || Math.abs(startX - endX) < 44) {
+      return;
+    }
+
+    if (endX < startX) {
+      showNextImage();
+    } else {
+      showPreviousImage();
+    }
+  }
+
+  return (
+    <figure
+      className="route-story-carousel"
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
+    >
+      <div className="route-story-carousel-stage">
+        {images.length > 1 && (
+          <button
+            className="route-story-carousel-control route-story-carousel-previous"
+            type="button"
+            onClick={showPreviousImage}
+            aria-label="Previous image"
+          >
+            <span aria-hidden="true">‹</span>
+          </button>
+        )}
+
+        <button
+          className="route-story-carousel-button"
+          type="button"
+          onClick={() => onOpenImage(activeImage)}
+        >
+          <img
+            key={activeImage.id}
+            src={getActivityImagePublicUrl(activeImage)}
+            alt={activeImage.alt_text || activeImage.caption || activeImage.name}
+            loading="lazy"
+          />
+        </button>
+
+        {images.length > 1 && (
+          <button
+            className="route-story-carousel-control route-story-carousel-next"
+            type="button"
+            onClick={showNextImage}
+            aria-label="Next image"
+          >
+            <span aria-hidden="true">›</span>
+          </button>
+        )}
+      </div>
+
+      <div className="route-story-carousel-footer">
+        {activeImage.caption && <figcaption>{activeImage.caption}</figcaption>}
+        {images.length > 1 && (
+          <span className="route-story-carousel-count">
+            {safeActiveIndex + 1} / {images.length}
+          </span>
+        )}
+      </div>
+    </figure>
+  );
+}
+
+function renderActivityImageFigure(
+  image: ProjectActivityImage,
+  key: string,
+  onOpenImage: (image: ProjectActivityImage) => void,
+  captionOverride?: string,
+) {
+  const imageUrl = getActivityImagePublicUrl(image);
+  const caption = captionOverride?.trim() || image.caption?.trim();
+
+  return (
+    <figure className="route-story-image" key={key}>
+      <button
+        className="route-story-image-button"
+        type="button"
+        onClick={() => onOpenImage(image)}
+      >
+        <img
+          src={imageUrl}
+          alt={image.alt_text || caption || image.name}
+          loading="lazy"
+        />
+      </button>
+      {caption && <figcaption>{caption}</figcaption>}
+    </figure>
+  );
+}
+
+function renderExternalActivityImageFigure(
+  url: string,
+  key: string,
+  caption?: string,
+) {
+  return (
+    <figure className="route-story-image" key={key}>
+      <img src={url} alt={caption || 'Generated test activity'} loading="lazy" />
+      {caption && <figcaption>{caption}</figcaption>}
+    </figure>
+  );
+}
+
+function renderActivityImageCarousel(
+  images: ProjectActivityImage[],
+  key: string,
+  onOpenImage: (image: ProjectActivityImage) => void,
+) {
+  if (images.length === 0) {
+    return null;
+  }
+
+  return (
+    <ActivityImageCarousel
+      images={images}
+      key={key}
+      onOpenImage={onOpenImage}
+    />
+  );
+}
+
+function renderActivityParagraph(
+  paragraph: string,
+  paragraphIndex: number,
+  images: ProjectActivityImage[],
+  onOpenImage: (image: ProjectActivityImage) => void,
+) {
   const parts: ReactNode[] = [];
   let textStart = 0;
+  const imagesByName = new globalThis.Map(
+    images.map((image) => [image.name.toLowerCase(), image]),
+  );
 
-  for (const match of paragraph.matchAll(youtubeUrlPattern)) {
+  for (const match of paragraph.matchAll(videoShortcodeOrYouTubeUrlPattern)) {
     const rawMatch = match[0];
     const matchIndex = match.index ?? 0;
-    const { url } = splitTrailingUrlPunctuation(rawMatch);
-    const embedUrl = getYouTubeEmbedUrl(url);
+    const shortcodeType = match[1] ?? 'Video';
+    const shortcodeAttributes = match[2]
+      ? parseQuotedAttributes(match[2])
+      : null;
+    let renderedShortcode: ReactNode = null;
 
-    if (!embedUrl) {
+    if (shortcodeType === 'Image' && shortcodeAttributes) {
+      const imageName = shortcodeAttributes.name?.trim().toLowerCase();
+      const image = imageName ? imagesByName.get(imageName) : null;
+
+      if (!image) {
+        continue;
+      }
+
+      renderedShortcode = renderActivityImageFigure(
+        image,
+        `image-${paragraphIndex}-${matchIndex}`,
+        onOpenImage,
+        shortcodeAttributes.caption,
+      );
+    } else if (shortcodeType === 'ImageCarousel' && shortcodeAttributes) {
+      const carouselImages =
+        shortcodeAttributes.images
+          ?.split(',')
+          .map((name) => imagesByName.get(name.trim().toLowerCase()))
+          .filter((image): image is ProjectActivityImage => Boolean(image)) ?? [];
+
+      renderedShortcode = renderActivityImageCarousel(
+        carouselImages,
+        `carousel-${paragraphIndex}-${matchIndex}`,
+        onOpenImage,
+      );
+    } else if (shortcodeType === 'ExternalImage' && shortcodeAttributes) {
+      const imageUrl = shortcodeAttributes.url?.trim();
+
+      if (!imageUrl) {
+        continue;
+      }
+
+      renderedShortcode = renderExternalActivityImageFigure(
+        imageUrl,
+        `external-image-${paragraphIndex}-${matchIndex}`,
+        shortcodeAttributes.caption,
+      );
+    } else {
+      const rawUrl = shortcodeAttributes?.url ?? rawMatch;
+      const { url } = shortcodeAttributes
+        ? { url: rawUrl }
+        : splitTrailingUrlPunctuation(rawUrl);
+      const embedUrl = getYouTubeEmbedUrl(url);
+      const caption = shortcodeAttributes?.caption?.trim();
+
+      if (!embedUrl) {
+        continue;
+      }
+
+      renderedShortcode = (
+        <figure className="route-story-video" key={`video-${paragraphIndex}-${matchIndex}`}>
+          <div className="route-story-video-frame">
+            <iframe
+              src={embedUrl}
+              title={caption || 'Activity video'}
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+              allowFullScreen
+              loading="lazy"
+            />
+          </div>
+          {caption && <figcaption>{caption}</figcaption>}
+        </figure>
+      );
+    }
+
+    if (!renderedShortcode) {
       continue;
     }
 
@@ -1532,19 +3564,9 @@ function renderActivityParagraph(paragraph: string, paragraphIndex: number) {
       );
     }
 
-    parts.push(
-      <figure className="route-story-video" key={`video-${paragraphIndex}-${matchIndex}`}>
-        <iframe
-          src={embedUrl}
-          title="Activity video"
-          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-          allowFullScreen
-          loading="lazy"
-        />
-      </figure>,
-    );
+    parts.push(renderedShortcode);
 
-    textStart = matchIndex + url.length;
+    textStart = matchIndex + rawMatch.length;
   }
 
   if (textStart < paragraph.length) {
@@ -1560,17 +3582,80 @@ function renderActivityParagraph(paragraph: string, paragraphIndex: number) {
     : [<p key={`text-${paragraphIndex}`}>{paragraph}</p>];
 }
 
-function ActivityStory({ activity, onBack, isArriving = false }: ActivityStoryProps) {
+function useProjectActivityImages(activityId: string) {
+  const [activityImages, setActivityImages] = useState<ProjectActivityImage[]>([]);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  const reloadActivityImages = useCallback(() => {
+    setReloadKey((currentKey) => currentKey + 1);
+  }, []);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    if (!supabase) {
+      setActivityImages([]);
+      return;
+    }
+
+    supabase
+      .from('project_activity_images')
+      .select('id,activity_id,name,storage_bucket,storage_path,caption,alt_text,sort_order')
+      .eq('activity_id', activityId)
+      .order('sort_order', { ascending: true })
+      .order('created_at', { ascending: true })
+      .then(({ data, error }) => {
+        if (isCancelled) {
+          return;
+        }
+
+        if (error) {
+          console.error('Could not load activity images.', error);
+          setActivityImages([]);
+          return;
+        }
+
+        setActivityImages(data ?? []);
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activityId, reloadKey]);
+
+  return {
+    activityImages,
+    reloadActivityImages,
+  };
+}
+
+function ActivityStory({
+  activity,
+  onBack,
+  onFocusActivity,
+  onFocusProgressPosition,
+  isArriving = false,
+}: ActivityStoryProps) {
+  const { activityImages } = useProjectActivityImages(activity.id);
+  const [activeImage, setActiveImage] = useState<ProjectActivityImage | null>(null);
+  const openActivityImage = useCallback((image: ProjectActivityImage) => {
+    setActiveImage(image);
+  }, []);
   const description = activity.text_description?.trim();
   const paragraphs = description
     ? description.split(/\n{2,}/).map((paragraph) => paragraph.trim())
     : ['No route description has been added yet.'];
   const correctedDistance = formatKilometers(activity.corrected_distance);
   const distanceMadeGood = formatKilometers(activity.distance_made_good);
+  const activityDateTime = formatActivityDateTime(activity.started_at);
+  const stravaLinkLabel = activity.strava_type
+    ? `Strava ${activity.strava_type}`
+    : 'Strava';
   const activityRouteClass =
     activity.pfp_type === 'Far Point Trail'
       ? 'journey-far-point'
       : 'journey-voyager';
+  const activeImageUrl = activeImage ? getActivityImagePublicUrl(activeImage) : '';
 
   return (
     <article className={`route-story${isArriving ? ' route-story-arriving' : ''}`}>
@@ -1591,39 +3676,593 @@ function ActivityStory({ activity, onBack, isArriving = false }: ActivityStoryPr
             <path d="M9.5 21v-6.2h5V21" />
           </svg>
         </button>
-        {correctedDistance && <span>{correctedDistance}</span>}
-        {distanceMadeGood && <span>{distanceMadeGood} made good</span>}
+        {activityDateTime && <span>{activityDateTime}</span>}
+        {correctedDistance && <span>Distance: {correctedDistance}</span>}
+        {distanceMadeGood && <span>Made good: {distanceMadeGood}</span>}
+        <button
+          className="route-story-map-link"
+          type="button"
+          onClick={() => onFocusActivity(activity.id)}
+        >
+          Zoom to Activity
+        </button>
+        {activity.pfp_type && (
+          <button
+            className="route-story-map-link route-story-progress-link"
+            type="button"
+            onClick={() => onFocusProgressPosition(activity.id)}
+          >
+            Progress Position
+          </button>
+        )}
+        {activity.strava_url && (
+          <a
+            className="route-story-strava-link"
+            href={activity.strava_url}
+            target="_blank"
+            rel="noreferrer noopener"
+          >
+            {stravaLinkLabel}
+          </a>
+        )}
       </div>
       <div className="route-story-copy">
         {paragraphs.flatMap((paragraph, index) =>
-          renderActivityParagraph(paragraph, index),
+          renderActivityParagraph(paragraph, index, activityImages, openActivityImage),
         )}
       </div>
+      {activeImage && (
+        <div
+          className="route-story-lightbox"
+          role="dialog"
+          aria-modal="true"
+          aria-label={activeImage.caption || activeImage.name}
+          onClick={() => setActiveImage(null)}
+        >
+          <button
+            className="route-story-lightbox-close"
+            type="button"
+            onClick={() => setActiveImage(null)}
+            aria-label="Close image"
+          >
+            Close
+          </button>
+          <figure
+            className="route-story-lightbox-figure"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <img
+              src={activeImageUrl}
+              alt={activeImage.alt_text || activeImage.caption || activeImage.name}
+            />
+            {activeImage.caption && <figcaption>{activeImage.caption}</figcaption>}
+          </figure>
+        </div>
+      )}
     </article>
   );
 }
 
-function JourneySummary() {
+type ProgressStoryProps = {
+  activity: SelectedProjectActivity;
+  progressPosition: ProgressPosition | null;
+  session: Session | null;
+  onBack: () => void;
+  onFocusActivity: (activityId: string) => void;
+  onFocusProgressPosition: (activityId: string) => void;
+  onProgressStorySaved: (activity: SelectedProjectActivity) => void;
+  isArriving?: boolean;
+};
+
+function ProgressStory({
+  activity,
+  progressPosition,
+  session,
+  onBack,
+  onFocusActivity,
+  onFocusProgressPosition,
+  onProgressStorySaved,
+  isArriving = false,
+}: ProgressStoryProps) {
+  const { activityImages, reloadActivityImages } = useProjectActivityImages(activity.id);
+  const [nearbyPlaceLookup, setNearbyPlaceLookup] = useState<NearbyPlaceLookup>({
+    status: 'idle',
+  });
+  const [activeImage, setActiveImage] = useState<ProjectActivityImage | null>(null);
+  const [draftStory, setDraftStory] = useState(activity.progress_story ?? '');
+  const [isEditingStory, setIsEditingStory] = useState(false);
+  const [isGeneratingStory, setIsGeneratingStory] = useState(false);
+  const [isSavingStory, setIsSavingStory] = useState(false);
+  const [storyStatus, setStoryStatus] = useState('');
+  const [storyError, setStoryError] = useState('');
+  const [uploadName, setUploadName] = useState('');
+  const [uploadCaption, setUploadCaption] = useState('');
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [isUploadingImage, setIsUploadingImage] = useState(false);
+  const [imageUploadStatus, setImageUploadStatus] = useState('');
+  const [imageUploadError, setImageUploadError] = useState('');
+  const progressDistance = progressPosition?.progressKilometers ?? null;
+  const position = progressPosition?.position ?? null;
+  const isOwner = isProjectOwner(session);
+  const savedStory = activity.progress_story?.trim() ?? '';
+  const displayedStory = isEditingStory ? draftStory.trim() : savedStory;
+  const storyParagraphs = displayedStory
+    ? displayedStory.split(/\n{2,}/).map((paragraph) => paragraph.trim())
+    : [];
+  const activeImageUrl = activeImage ? getActivityImagePublicUrl(activeImage) : '';
+  const openActivityImage = useCallback((image: ProjectActivityImage) => {
+    setActiveImage(image);
+  }, []);
+  const progressDistanceLabel =
+    progressDistance === null ? 'Calculating...' : formatKilometers(progressDistance);
+  const percentCompleteLabel =
+    progressDistance === null
+      ? 'Calculating...'
+      : formatPercent((progressDistance / halfJourneyKilometers) * 100);
+  const correctedDistance = formatKilometers(activity.corrected_distance);
+  const distanceMadeGood = formatKilometers(activity.distance_made_good);
+  const activityDateTime = formatActivityDateTime(activity.started_at);
+  const activityRouteClass =
+    activity.pfp_type === 'Far Point Trail'
+      ? 'journey-far-point'
+      : 'journey-voyager';
+  const nearbyPlaceLabel =
+    nearbyPlaceLookup.status === 'ready'
+      ? nearbyPlaceLookup.label
+      : nearbyPlaceLookup.status === 'loading'
+        ? 'looking up nearest city...'
+        : nearbyPlaceLookup.status === 'error'
+          ? 'nearest city unavailable'
+          : 'nearest city pending';
+
+  useEffect(() => {
+    setDraftStory(activity.progress_story ?? '');
+    setIsEditingStory(false);
+    setStoryStatus('');
+    setStoryError('');
+  }, [activity.id, activity.progress_story]);
+
+  useEffect(() => {
+    if (!position) {
+      setNearbyPlaceLookup({ status: 'idle' });
+      return;
+    }
+
+    const abortController = new AbortController();
+
+    setNearbyPlaceLookup({ status: 'loading' });
+    lookupNearbyPlace(position, abortController.signal)
+      .then((label) => {
+        setNearbyPlaceLookup({ status: 'ready', label });
+      })
+      .catch((error) => {
+        if (abortController.signal.aborted) {
+          return;
+        }
+
+        console.error('Could not lookup nearby progress place.', error);
+        setNearbyPlaceLookup({ status: 'error' });
+      });
+
+    return () => {
+      abortController.abort();
+    };
+  }, [position?.latitude, position?.longitude]);
+
+  async function handleGenerateProgressStory() {
+    setStoryStatus('');
+    setStoryError('');
+
+    if (!isOwner) {
+      setStoryError('Only the Project Far Point owner can generate progress stories.');
+      return;
+    }
+
+    if (!supabase) {
+      setStoryError('Supabase is not configured.');
+      return;
+    }
+
+    if (!position || progressDistance === null) {
+      setStoryError('The progress position is still being calculated.');
+      return;
+    }
+
+    setIsGeneratingStory(true);
+
+    try {
+      const { data, error: functionError } = await supabase.functions.invoke(
+        'generate-progress-story',
+        {
+          body: {
+            activityId: activity.id,
+            latitude: position.latitude,
+            longitude: position.longitude,
+            progressKilometers: progressDistance,
+            percentComplete: (progressDistance / halfJourneyKilometers) * 100,
+            nearbyPlace:
+              nearbyPlaceLookup.status === 'ready' ? nearbyPlaceLookup.label : null,
+          },
+        },
+      );
+
+      if (functionError) {
+        throw new Error(
+          await getFunctionErrorMessage(
+            functionError,
+            'Could not generate progress story.',
+          ),
+        );
+      }
+
+      if (!data?.story || typeof data.story !== 'string') {
+        throw new Error('The generated story was not returned.');
+      }
+
+      setDraftStory(data.story.trim());
+      setIsEditingStory(true);
+      setStoryStatus('Generated a draft. Review and save when it feels right.');
+    } catch (generateError) {
+      setStoryError(
+        generateError instanceof Error
+          ? generateError.message
+          : 'Could not generate progress story.',
+      );
+    } finally {
+      setIsGeneratingStory(false);
+    }
+  }
+
+  async function handleSaveProgressStory() {
+    setStoryStatus('');
+    setStoryError('');
+
+    if (!isOwner) {
+      setStoryError('Only the Project Far Point owner can save progress stories.');
+      return;
+    }
+
+    if (!supabase) {
+      setStoryError('Supabase is not configured.');
+      return;
+    }
+
+    setIsSavingStory(true);
+
+    try {
+      const nextStory = draftStory.trim() || null;
+      const { data, error } = await supabase
+        .from('project_activities')
+        .update({
+          progress_story: nextStory,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', activity.id)
+        .select(projectActivitySelectColumns)
+        .single();
+
+      if (error) {
+        throw error;
+      }
+
+      onProgressStorySaved(data as SelectedProjectActivity);
+      setIsEditingStory(false);
+      setStoryStatus(nextStory ? 'Progress story saved.' : 'Progress story cleared.');
+    } catch (saveError) {
+      setStoryError(
+        saveError instanceof Error ? saveError.message : 'Could not save progress story.',
+      );
+    } finally {
+      setIsSavingStory(false);
+    }
+  }
+
+  async function handleUploadProgressImage(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setImageUploadStatus('');
+    setImageUploadError('');
+
+    if (!isOwner) {
+      setImageUploadError('Only the Project Far Point owner can upload images.');
+      return;
+    }
+
+    if (!supabase) {
+      setImageUploadError('Supabase is not configured.');
+      return;
+    }
+
+    const name = uploadName.trim();
+
+    if (!name || !uploadFile) {
+      setImageUploadError('Choose an image file and give it a shortcode name.');
+      return;
+    }
+
+    if (!imageNamePattern.test(name)) {
+      setImageUploadError(
+        'Image names must start with a letter or number and can only use letters, numbers, hyphens, and underscores.',
+      );
+      return;
+    }
+
+    setIsUploadingImage(true);
+
+    try {
+      const extension = getImageFileExtension(uploadFile);
+      const storagePath = `${activity.id}/${name}.${extension}`;
+      const { error: uploadError } = await supabase.storage
+        .from('project-activity-images')
+        .upload(storagePath, uploadFile, {
+          cacheControl: '31536000',
+          contentType: uploadFile.type || undefined,
+          upsert: true,
+        });
+
+      if (uploadError) {
+        throw uploadError;
+      }
+
+      const caption = uploadCaption.trim();
+      const { error: imageError } = await supabase
+        .from('project_activity_images')
+        .upsert(
+          {
+            activity_id: activity.id,
+            name,
+            storage_bucket: 'project-activity-images',
+            storage_path: storagePath,
+            caption: caption || null,
+            alt_text: caption || name,
+            sort_order: activityImages.length,
+            content_type: uploadFile.type || null,
+            size_bytes: uploadFile.size,
+          },
+          {
+            onConflict: 'activity_id,name',
+          },
+        );
+
+      if (imageError) {
+        throw imageError;
+      }
+
+      setUploadName('');
+      setUploadCaption('');
+      setUploadFile(null);
+      reloadActivityImages();
+      setImageUploadStatus(
+        `Uploaded ${name}. Use {Image name="${name}"} in the story.`,
+      );
+    } catch (uploadError) {
+      setImageUploadError(
+        uploadError instanceof Error ? uploadError.message : 'Could not upload image.',
+      );
+    } finally {
+      setIsUploadingImage(false);
+    }
+  }
+
+  return (
+    <article className={`route-story progress-story${isArriving ? ' route-story-arriving' : ''}`}>
+      <p className={`eyebrow ${activityRouteClass}`}>
+        {activity.pfp_type ?? 'Project Far Point Route'} Progress
+      </p>
+      <h2>{activity.trail_name || activity.name}</h2>
+      <div className="route-story-meta" aria-label="Progress actions">
+        <button
+          className="route-story-back"
+          type="button"
+          onClick={onBack}
+          aria-label="Back to Project Far Point"
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+            <path d="M3 10.8 12 3l9 7.8" />
+            <path d="M5.5 9.2V21h13V9.2" />
+            <path d="M9.5 21v-6.2h5V21" />
+          </svg>
+        </button>
+        {activityDateTime && <span>{activityDateTime}</span>}
+        {correctedDistance && <span>Distance: {correctedDistance}</span>}
+        {distanceMadeGood && <span>Made good: {distanceMadeGood}</span>}
+        <button
+          className="route-story-map-link"
+          type="button"
+          onClick={() => onFocusActivity(activity.id)}
+        >
+          Zoom to Activity
+        </button>
+        <button
+          className="route-story-map-link route-story-progress-link"
+          type="button"
+          onClick={() => onFocusProgressPosition(activity.id)}
+        >
+          Zoom to Progress
+        </button>
+      </div>
+      <dl className="progress-story-facts">
+        <div>
+          <dt>Position</dt>
+          <dd>
+            {position ? formatLatLon(position) : 'Calculating...'} - {nearbyPlaceLabel}
+          </dd>
+        </div>
+        <div>
+          <dt>Distance from Start</dt>
+          <dd>{progressDistanceLabel}</dd>
+        </div>
+        <div>
+          <dt>Percent Complete</dt>
+          <dd>{percentCompleteLabel}</dd>
+        </div>
+      </dl>
+      <div className="progress-story-placeholder">
+        {storyParagraphs.length > 0 ? (
+          <div className="route-story-copy">
+            {storyParagraphs.flatMap((paragraph, index) =>
+              renderActivityParagraph(paragraph, index, activityImages, openActivityImage),
+            )}
+          </div>
+        ) : (
+          <p>Progress reflections will appear here.</p>
+        )}
+      </div>
+      {isOwner && (
+        <section className="progress-story-editor" aria-label="Progress story editor">
+          <div className="progress-story-editor-actions">
+            <button
+              className="route-story-map-link"
+              type="button"
+              onClick={handleGenerateProgressStory}
+              disabled={isGeneratingStory || !position}
+            >
+              {isGeneratingStory ? 'Generating...' : 'Generate Story'}
+            </button>
+            <button
+              className="route-story-map-link"
+              type="button"
+              onClick={() => setIsEditingStory((currentValue) => !currentValue)}
+            >
+              {isEditingStory ? 'Close Editor' : 'Edit Story'}
+            </button>
+            {isEditingStory && (
+              <button
+                className="route-story-map-link"
+                type="button"
+                onClick={handleSaveProgressStory}
+                disabled={isSavingStory}
+              >
+                {isSavingStory ? 'Saving...' : 'Save Story'}
+              </button>
+            )}
+          </div>
+          {isEditingStory && (
+            <textarea
+              className="progress-story-draft"
+              value={draftStory}
+              onChange={(event) => setDraftStory(event.target.value)}
+              aria-label="Progress story draft"
+            />
+          )}
+          {storyStatus && <p className="activity-status">{storyStatus}</p>}
+          {storyError && <p className="activity-error">{storyError}</p>}
+          <form className="progress-image-upload" onSubmit={handleUploadProgressImage}>
+            <label>
+              Image name
+              <input
+                type="text"
+                value={uploadName}
+                onChange={(event) => setUploadName(event.target.value)}
+                placeholder="e.g. ocean_current"
+              />
+            </label>
+            <label>
+              Caption
+              <input
+                type="text"
+                value={uploadCaption}
+                onChange={(event) => setUploadCaption(event.target.value)}
+                placeholder="Optional caption"
+              />
+            </label>
+            <label>
+              Image file
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/gif"
+                onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)}
+              />
+            </label>
+            <button
+              className="route-story-map-link"
+              type="submit"
+              disabled={isUploadingImage}
+            >
+              {isUploadingImage ? 'Uploading...' : 'Upload Image'}
+            </button>
+          </form>
+          {imageUploadStatus && <p className="activity-status">{imageUploadStatus}</p>}
+          {imageUploadError && <p className="activity-error">{imageUploadError}</p>}
+        </section>
+      )}
+      {activeImage && (
+        <div
+          className="route-story-lightbox"
+          role="dialog"
+          aria-modal="true"
+          aria-label={activeImage.caption || activeImage.name}
+          onClick={() => setActiveImage(null)}
+        >
+          <button
+            className="route-story-lightbox-close"
+            type="button"
+            onClick={() => setActiveImage(null)}
+            aria-label="Close image"
+          >
+            Close
+          </button>
+          <figure
+            className="route-story-lightbox-figure"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <img
+              src={activeImageUrl}
+              alt={activeImage.alt_text || activeImage.caption || activeImage.name}
+            />
+            {activeImage.caption && <figcaption>{activeImage.caption}</figcaption>}
+          </figure>
+        </div>
+      )}
+    </article>
+  );
+}
+
+type JourneySummaryProps = {
+  progress: JourneyProgressSummary;
+};
+
+function getJourneyProgressDetails(distanceKilometers: number) {
+  const percentComplete = (distanceKilometers / halfJourneyKilometers) * 100;
+
+  return {
+    distanceLabel: formatKilometers(distanceKilometers) ?? '0 km',
+    percentLabel: formatPercent(percentComplete),
+    progressWidth: `${Math.min(100, Math.max(0, percentComplete))}%`,
+  };
+}
+
+function JourneySummary({ progress }: JourneySummaryProps) {
+  const voyagerProgress = getJourneyProgressDetails(progress.Voyager);
+  const farPointProgress = getJourneyProgressDetails(progress['Far Point Trail']);
+
   return (
     <aside className="journey-summary" aria-label="Project route summary">
       <div className="summary-item summary-voyager">
         <span className="summary-kicker journey-voyager">Voyager</span>
         <span className="summary-label">New Zealand to Santiago de Compostela</span>
         <span className="summary-progress-text">
-          <strong>1,000 km</strong> of 20,038 km completed <strong>(5%)</strong>
+          <strong>{voyagerProgress.distanceLabel}</strong> of 20,038 km completed{' '}
+          <strong>({voyagerProgress.percentLabel})</strong>
         </span>
         <span className="summary-progress" aria-hidden="true">
-          <span className="summary-progress-fill summary-progress-voyager" />
+          <span
+            className="summary-progress-fill summary-progress-voyager"
+            style={{ width: voyagerProgress.progressWidth }}
+          />
         </span>
       </div>
       <div className="summary-item summary-far-point">
         <span className="summary-kicker journey-far-point">Far Point Trail</span>
         <span className="summary-label">Santiago de Compostela to New Zealand</span>
         <span className="summary-progress-text">
-          <strong>1,000 km</strong> of 20,038 km completed <strong>(5%)</strong>
+          <strong>{farPointProgress.distanceLabel}</strong> of 20,038 km completed{' '}
+          <strong>({farPointProgress.percentLabel})</strong>
         </span>
         <span className="summary-progress" aria-hidden="true">
-          <span className="summary-progress-fill summary-progress-far-point" />
+          <span
+            className="summary-progress-fill summary-progress-far-point"
+            style={{ width: farPointProgress.progressWidth }}
+          />
         </span>
       </div>
       <div className="summary-route">
@@ -1656,11 +4295,481 @@ function CharityPanel() {
   );
 }
 
-function SearchPanel() {
+function getActivityDistanceValue(activity: ProjectActivity) {
+  const value = Number(activity.corrected_distance);
+
+  return Number.isFinite(value) ? value : 0;
+}
+
+function getActivityDateValue(activity: ProjectActivity) {
+  if (!activity.started_at) {
+    return 0;
+  }
+
+  const value = new Date(activity.started_at).getTime();
+
+  return Number.isNaN(value) ? 0 : value;
+}
+
+function getActivityDisplayName(activity: ProjectActivity) {
+  return activity.trail_name || activity.name;
+}
+
+function getActivityLocationLabel(activity: ProjectActivity) {
+  return [
+    activity.city,
+    activity.province ?? activity.state,
+    activity.country,
+    activity.continent,
+  ]
+    .filter(Boolean)
+    .join(', ');
+}
+
+function uniqueSorted(values: Array<string | null | undefined>) {
+  return Array.from(
+    new Set(values.filter((value): value is string => Boolean(value?.trim()))),
+  ).sort((left, right) => left.localeCompare(right));
+}
+
+function SearchPanel({ onActivitySelect }: SearchPanelProps) {
+  const [activities, setActivities] = useState<ProjectActivity[]>([]);
+  const [projectPath, setProjectPath] = useState<ProjectPathFilter>('');
+  const [nameQuery, setNameQuery] = useState('');
+  const [continent, setContinent] = useState('');
+  const [country, setCountry] = useState('');
+  const [region, setRegion] = useState('');
+  const [city, setCity] = useState('');
+  const [keywordQuery, setKeywordQuery] = useState('');
+  const [sortField, setSortField] = useState<SearchSortField>('date');
+  const [sortDirection, setSortDirection] = useState<SearchSortDirection>('desc');
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    if (!supabase) {
+      return;
+    }
+
+    setIsLoading(true);
+    setError('');
+
+    async function loadSearchActivities() {
+      try {
+        if (!supabase) {
+          return;
+        }
+
+        const { data, error } = await supabase
+          .from('project_activities')
+          .select(projectActivitySelectColumns)
+          .or('geometry_simplified_medium.not.is.null,geometry_geojson.not.is.null');
+
+        if (isCancelled) {
+          return;
+        }
+
+        if (error) {
+          setError('Could not load activities for search.');
+          setActivities([]);
+          return;
+        }
+
+        setActivities((data ?? []) as ProjectActivity[]);
+      } catch {
+        if (!isCancelled) {
+          setError('Could not load activities for search.');
+          setActivities([]);
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsLoading(false);
+        }
+      }
+    }
+
+    loadSearchActivities();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
+
+  const pathActivities = useMemo(
+    () =>
+      projectPath
+        ? activities.filter((activity) => activity.pfp_type === projectPath)
+        : [],
+    [activities, projectPath],
+  );
+  const availableNames = useMemo(
+    () => uniqueSorted(pathActivities.flatMap((activity) => [activity.name, activity.trail_name])),
+    [pathActivities],
+  );
+  const availableContinents = useMemo(
+    () => uniqueSorted(pathActivities.map((activity) => activity.continent)),
+    [pathActivities],
+  );
+  const continentActivities = useMemo(
+    () =>
+      continent
+        ? pathActivities.filter((activity) => activity.continent === continent)
+        : pathActivities,
+    [continent, pathActivities],
+  );
+  const availableCountries = useMemo(
+    () => uniqueSorted(continentActivities.map((activity) => activity.country)),
+    [continentActivities],
+  );
+  const countryActivities = useMemo(
+    () =>
+      country
+        ? continentActivities.filter((activity) => activity.country === country)
+        : continentActivities,
+    [continentActivities, country],
+  );
+  const regionField = country === 'Canada' ? 'province' : 'state';
+  const regionLabel = country === 'Canada' ? 'Province' : 'State';
+  const canFilterRegion = country === 'Canada' || country === 'United States';
+  const availableRegions = useMemo(
+    () =>
+      canFilterRegion
+        ? uniqueSorted(countryActivities.map((activity) => activity[regionField]))
+        : [],
+    [canFilterRegion, countryActivities, regionField],
+  );
+  const regionActivities = useMemo(
+    () =>
+      canFilterRegion && region
+        ? countryActivities.filter((activity) => activity[regionField] === region)
+        : countryActivities,
+    [canFilterRegion, countryActivities, region, regionField],
+  );
+  const availableCities = useMemo(
+    () => uniqueSorted(regionActivities.map((activity) => activity.city)),
+    [regionActivities],
+  );
+  const keywordTerms = useMemo(
+    () =>
+      keywordQuery
+        .split(',')
+        .map((keyword) => keyword.trim().toLowerCase())
+        .filter(Boolean),
+    [keywordQuery],
+  );
+  const filteredActivities = useMemo(() => {
+    if (!projectPath) {
+      return [];
+    }
+
+    const cleanNameQuery = nameQuery.trim().toLowerCase();
+
+    return pathActivities
+      .filter((activity) => {
+        if (cleanNameQuery) {
+          const searchableName = [activity.name, activity.trail_name]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase();
+
+          if (!searchableName.includes(cleanNameQuery)) {
+            return false;
+          }
+        }
+
+        if (continent && activity.continent !== continent) {
+          return false;
+        }
+
+        if (country && activity.country !== country) {
+          return false;
+        }
+
+        if (canFilterRegion && region && activity[regionField] !== region) {
+          return false;
+        }
+
+        if (city && activity.city !== city) {
+          return false;
+        }
+
+        if (keywordTerms.length > 0) {
+          const searchableText = [
+            activity.name,
+            activity.trail_name,
+            activity.text_description,
+            activity.city,
+            activity.state,
+            activity.province,
+            activity.country,
+            activity.continent,
+            activity.sport_type,
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase();
+
+          return keywordTerms.some((keyword) => searchableText.includes(keyword));
+        }
+
+        return true;
+      })
+      .sort((left, right) => {
+        let comparison = 0;
+
+        if (sortField === 'date') {
+          comparison = getActivityDateValue(left) - getActivityDateValue(right);
+        } else if (sortField === 'distance') {
+          comparison = getActivityDistanceValue(left) - getActivityDistanceValue(right);
+        } else if (sortField === 'name') {
+          comparison = getActivityDisplayName(left).localeCompare(getActivityDisplayName(right));
+        } else {
+          comparison = getActivityLocationLabel(left).localeCompare(getActivityLocationLabel(right));
+        }
+
+        return sortDirection === 'asc' ? comparison : -comparison;
+      });
+  }, [
+    canFilterRegion,
+    city,
+    continent,
+    country,
+    keywordTerms,
+    nameQuery,
+    pathActivities,
+    projectPath,
+    region,
+    regionField,
+    sortDirection,
+    sortField,
+  ]);
+
+  function handleProjectPathChange(nextProjectPath: Exclude<ProjectPathFilter, ''>) {
+    setProjectPath(nextProjectPath);
+    setContinent('');
+    setCountry('');
+    setRegion('');
+    setCity('');
+  }
+
+  function handleContinentChange(value: string) {
+    setContinent(value);
+    setCountry('');
+    setRegion('');
+    setCity('');
+  }
+
+  function handleCountryChange(value: string) {
+    setCountry(value);
+    setRegion('');
+    setCity('');
+  }
+
+  function handleRegionChange(value: string) {
+    setRegion(value);
+    setCity('');
+  }
+
+  function handleClearFilters() {
+    setNameQuery('');
+    setContinent('');
+    setCountry('');
+    setRegion('');
+    setCity('');
+    setKeywordQuery('');
+    setSortField('date');
+    setSortDirection('desc');
+  }
+
   return (
-    <section className="search-panel" aria-label="Search">
-      <p className="eyebrow">Search</p>
-      <h2>Search coming soon</h2>
+    <section className="search-panel" aria-label="Search activities">
+      <div className="search-panel-header">
+        <div>
+          <p className="eyebrow">Search</p>
+          <h2>Find an Activity</h2>
+        </div>
+        <button className="search-clear-button" type="button" onClick={handleClearFilters}>
+          Clear
+        </button>
+      </div>
+
+      <div className="search-path-toggle" aria-label="Project path">
+        <button
+          className={projectPath === 'Voyager' ? 'search-path-active' : ''}
+          type="button"
+          onClick={() => handleProjectPathChange('Voyager')}
+        >
+          Voyager
+        </button>
+        <button
+          className={projectPath === 'Far Point Trail' ? 'search-path-active' : ''}
+          type="button"
+          onClick={() => handleProjectPathChange('Far Point Trail')}
+        >
+          Far Point Trail
+        </button>
+      </div>
+
+      {!projectPath && (
+        <p className="search-empty-state">Choose Voyager or Far Point Trail to start searching.</p>
+      )}
+
+      {projectPath && (
+        <>
+          <div className="search-controls">
+            <label className="search-field search-field-wide">
+              <span>Activity name</span>
+              <input
+                value={nameQuery}
+                onChange={(event) => setNameQuery(event.target.value)}
+                list="activity-name-options"
+                placeholder="Start typing an activity name"
+              />
+              <datalist id="activity-name-options">
+                {availableNames.slice(0, 250).map((name) => (
+                  <option value={name} key={name} />
+                ))}
+              </datalist>
+            </label>
+
+            <label className="search-field">
+              <span>Continent</span>
+              <select
+                value={continent}
+                onChange={(event) => handleContinentChange(event.target.value)}
+              >
+                <option value="">Any continent</option>
+                {availableContinents.map((value) => (
+                  <option value={value} key={value}>
+                    {value}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="search-field">
+              <span>Country</span>
+              <select
+                value={country}
+                onChange={(event) => handleCountryChange(event.target.value)}
+              >
+                <option value="">Any country</option>
+                {availableCountries.map((value) => (
+                  <option value={value} key={value}>
+                    {value}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            {canFilterRegion && (
+              <label className="search-field">
+                <span>{regionLabel}</span>
+                <select
+                  value={region}
+                  onChange={(event) => handleRegionChange(event.target.value)}
+                >
+                  <option value="">
+                    Any {regionLabel.toLowerCase()}
+                  </option>
+                  {availableRegions.map((value) => (
+                    <option value={value} key={value}>
+                      {value}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+
+            <label className="search-field">
+              <span>City</span>
+              <select value={city} onChange={(event) => setCity(event.target.value)}>
+                <option value="">Any city</option>
+                {availableCities.map((value) => (
+                  <option value={value} key={value}>
+                    {value}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="search-field search-field-wide">
+              <span>Keywords</span>
+              <input
+                value={keywordQuery}
+                onChange={(event) => setKeywordQuery(event.target.value)}
+                placeholder="alpha, bravo, charlie"
+              />
+            </label>
+
+            <label className="search-field">
+              <span>Sort by</span>
+              <select
+                value={sortField}
+                onChange={(event) => setSortField(event.target.value as SearchSortField)}
+              >
+                <option value="date">Date</option>
+                <option value="distance">Distance</option>
+                <option value="name">Name</option>
+                <option value="location">Location</option>
+              </select>
+            </label>
+
+            <label className="search-field">
+              <span>Order</span>
+              <select
+                value={sortDirection}
+                onChange={(event) => setSortDirection(event.target.value as SearchSortDirection)}
+              >
+                <option value="desc">Descending</option>
+                <option value="asc">Ascending</option>
+              </select>
+            </label>
+          </div>
+
+          <div className="search-results-header">
+            <span>
+              {isLoading
+                ? 'Loading activities...'
+                : `${filteredActivities.length.toLocaleString()} result${
+                    filteredActivities.length === 1 ? '' : 's'
+                  }`}
+            </span>
+            {error && <span className="search-error">{error}</span>}
+          </div>
+
+          <div className="search-results" role="list">
+            {filteredActivities.slice(0, 150).map((activity) => {
+              const distance = formatKilometers(activity.corrected_distance);
+              const date = formatActivityDateTime(activity.started_at);
+              const location = getActivityLocationLabel(activity);
+
+              return (
+                <button
+                  className="search-result"
+                  type="button"
+                  role="listitem"
+                  key={activity.id}
+                  onClick={() => onActivitySelect(activity)}
+                >
+                  <span className="search-result-name">{getActivityDisplayName(activity)}</span>
+                  <span className="search-result-meta">
+                    {date && <span>{date}</span>}
+                    {distance && <span>{distance}</span>}
+                    {location && <span>{location}</span>}
+                  </span>
+                </button>
+              );
+            })}
+
+            {!isLoading && filteredActivities.length === 0 && (
+              <p className="search-empty-state">No activities match those filters.</p>
+            )}
+          </div>
+        </>
+      )}
     </section>
   );
 }
@@ -1673,12 +4782,74 @@ function App() {
   const hasMovedMapControl = useRef(false);
   const [selectedActivity, setSelectedActivity] =
     useState<SelectedProjectActivity | null>(null);
+  const [activityPanelMode, setActivityPanelMode] =
+    useState<ActivityPanelMode>('story');
+  const [allProjectActivities, setAllProjectActivities] = useState<ProjectActivity[]>([]);
   const [selectedActivityAnimationKey, setSelectedActivityAnimationKey] = useState(0);
   const [mobileMode, setMobileMode] = useState<MobileMode>('project');
   const [showMapHandleHint, setShowMapHandleHint] = useState(true);
   const [mobileMapHeight, setMobileMapHeight] = useState(48);
   const [mobileMapControlX, setMobileMapControlX] = useState(94);
   const [mobileMapOpacity, setMobileMapOpacity] = useState(1);
+  const [desktopContentTab, setDesktopContentTab] =
+    useState<DesktopContentTab>('story');
+  const [mapFocusActivityId, setMapFocusActivityId] = useState<string | null>(null);
+  const [mapFocusActivityKey, setMapFocusActivityKey] = useState(0);
+  const [mapProgressFocusActivityId, setMapProgressFocusActivityId] =
+    useState<string | null>(null);
+  const [mapProgressFocusActivityKey, setMapProgressFocusActivityKey] = useState(0);
+  const [showLogoLightbox, setShowLogoLightbox] = useState(false);
+  const [, setIsGlobeReady] = useState(false);
+  const logoUrl = `${import.meta.env.BASE_URL}ProjectFarPoint.png`;
+  const progressPositionsByActivityId = useMemo(() => {
+    return new globalThis.Map(
+      createProgressPositions(allProjectActivities).map((progressPosition) => [
+        progressPosition.activity.id,
+        progressPosition,
+      ]),
+    );
+  }, [allProjectActivities]);
+  const journeyProgress = useMemo(
+    () => createJourneyProgressSummary(allProjectActivities),
+    [allProjectActivities],
+  );
+  const animatedJourneyProgress = useAnimatedJourneyProgress(
+    journeyProgress,
+    allProjectActivities.length > 0,
+  );
+  const selectedProgressPosition = selectedActivity
+    ? progressPositionsByActivityId.get(selectedActivity.id) ?? null
+    : null;
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    if (!supabase) {
+      setAllProjectActivities([]);
+      return;
+    }
+
+    supabase
+      .from('project_activities')
+      .select(projectActivitySelectColumns)
+      .then(({ data, error }) => {
+        if (isCancelled) {
+          return;
+        }
+
+        if (error) {
+          console.error('Could not load progress activities.', error);
+          setAllProjectActivities([]);
+          return;
+        }
+
+        setAllProjectActivities((data ?? []) as ProjectActivity[]);
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
 
   const applyMobileMapPreset = useCallback(
     (preset: typeof mobileMapStoryPreset | typeof mobileMapFocusPreset) => {
@@ -1773,8 +4944,10 @@ function App() {
 
   const handleActivitySelect = useCallback((activity: SelectedProjectActivity) => {
     setSelectedActivity(activity);
+    setActivityPanelMode('story');
     setSelectedActivityAnimationKey((currentKey) => currentKey + 1);
     setMobileMode('project');
+    setDesktopContentTab('story');
     window.requestAnimationFrame(() => {
       if (window.matchMedia('(max-width: 980px)').matches) {
         storyPanelRef.current?.scrollIntoView({
@@ -1784,8 +4957,60 @@ function App() {
       }
     });
   }, []);
+  const handleProgressActivitySelect = useCallback((activity: SelectedProjectActivity) => {
+    setSelectedActivity(activity);
+    setActivityPanelMode('progress');
+    setSelectedActivityAnimationKey((currentKey) => currentKey + 1);
+    setMobileMode('project');
+    setDesktopContentTab('story');
+    window.requestAnimationFrame(() => {
+      if (window.matchMedia('(max-width: 980px)').matches) {
+        storyPanelRef.current?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'start',
+        });
+      }
+    });
+  }, []);
+  const handleSearchActivitySelect = useCallback((activity: ProjectActivity) => {
+    setSelectedActivity(activity);
+    setActivityPanelMode('story');
+    setSelectedActivityAnimationKey((currentKey) => currentKey + 1);
+    setMapFocusActivityId(activity.id);
+    setMapFocusActivityKey((currentKey) => currentKey + 1);
+  }, []);
+  const handleActivityFocus = useCallback((activityId: string) => {
+    setActivityPanelMode('story');
+    setMapFocusActivityId(activityId);
+    setMapFocusActivityKey((currentKey) => currentKey + 1);
+  }, []);
+  const handleProgressPositionFocus = useCallback((activityId: string) => {
+    setActivityPanelMode('progress');
+    setMapProgressFocusActivityId(activityId);
+    setMapProgressFocusActivityKey((currentKey) => currentKey + 1);
+  }, []);
   const handleBackToIntro = useCallback(() => {
     setSelectedActivity(null);
+    setActivityPanelMode('story');
+  }, []);
+  const handleProgressStorySaved = useCallback((activity: SelectedProjectActivity) => {
+    setSelectedActivity(activity);
+    setAllProjectActivities((currentActivities) =>
+      currentActivities.map((currentActivity) =>
+        currentActivity.id === activity.id
+          ? {
+            ...currentActivity,
+            progress_story: activity.progress_story,
+          }
+          : currentActivity,
+      ),
+    );
+  }, []);
+  const handleGlobeReadyChange = useCallback((isReady: boolean) => {
+    setIsGlobeReady(isReady);
+  }, []);
+  const handleDesktopContentTabChange = useCallback((nextTab: DesktopContentTab) => {
+    setDesktopContentTab(nextTab);
   }, []);
   const appStyle = {
     '--mobile-map-height': mobileMapHeight,
@@ -1815,13 +5040,18 @@ function App() {
     >
       <div className="mobile-shell-header">
         <div className="mobile-brand-heading">
-          <div className="brand-mark">
+          <button
+            className="brand-mark brand-mark-button"
+            type="button"
+            onClick={() => setShowLogoLightbox(true)}
+            aria-label="Open Project Far Point logo"
+          >
             <img
               className="brand-art"
-              src={`${import.meta.env.BASE_URL}ProjectFarPoint.png`}
+              src={logoUrl}
               alt="Project FarPoint logo with planet Earth in space"
             />
-          </div>
+          </button>
           <div className="brand-title">
             <p className="eyebrow">Welcome to Project Far Point</p>
             <p className="mobile-brand-title">Project Far Point</p>
@@ -1868,13 +5098,18 @@ function App() {
       >
         <header className="brand-header">
           <div className="brand-heading">
-            <div className="brand-mark">
+            <button
+              className="brand-mark brand-mark-button"
+              type="button"
+              onClick={() => setShowLogoLightbox(true)}
+              aria-label="Open Project Far Point logo"
+            >
               <img
                 className="brand-art"
-                src={`${import.meta.env.BASE_URL}ProjectFarPoint.png`}
+                src={logoUrl}
                 alt="Project FarPoint logo with planet Earth in space"
               />
-            </div>
+            </button>
             <div className="brand-title">
               <p className="eyebrow">Welcome to Project Far Point</p>
               <h1 id="welcome-title">Project Far Point</h1>
@@ -1882,12 +5117,46 @@ function App() {
           </div>
           <AuthPanel session={session} />
         </header>
-        <article className="intro">
-          {selectedActivity ? (
+        <div className="desktop-content-tabs" role="tablist" aria-label="Project content">
+          <button
+            className={desktopContentTab === 'story' ? 'desktop-content-tab-active' : ''}
+            type="button"
+            role="tab"
+            aria-selected={desktopContentTab === 'story'}
+            onClick={() => handleDesktopContentTabChange('story')}
+          >
+            Story
+          </button>
+          <button
+            className={desktopContentTab === 'search' ? 'desktop-content-tab-active' : ''}
+            type="button"
+            role="tab"
+            aria-selected={desktopContentTab === 'search'}
+            onClick={() => handleDesktopContentTabChange('search')}
+          >
+            Search
+          </button>
+        </div>
+        <article className={`intro${desktopContentTab === 'search' ? ' intro-hidden-desktop' : ''}`}>
+          {selectedActivity && activityPanelMode === 'progress' ? (
+            <ProgressStory
+              key={`${selectedActivity.id}-${selectedActivityAnimationKey}-progress`}
+              activity={selectedActivity}
+              progressPosition={selectedProgressPosition}
+              session={session}
+              onBack={handleBackToIntro}
+              onFocusActivity={handleActivityFocus}
+              onFocusProgressPosition={handleProgressPositionFocus}
+              onProgressStorySaved={handleProgressStorySaved}
+              isArriving
+            />
+          ) : selectedActivity ? (
             <ActivityStory
-              key={`${selectedActivity.id}-${selectedActivityAnimationKey}`}
+              key={`${selectedActivity.id}-${selectedActivityAnimationKey}-story`}
               activity={selectedActivity}
               onBack={handleBackToIntro}
+              onFocusActivity={handleActivityFocus}
+              onFocusProgressPosition={handleProgressPositionFocus}
               isArriving
             />
           ) : (
@@ -1896,30 +5165,28 @@ function App() {
                 Project Far Point is a geo-blog documenting my attempt to
                 travel a cumulative distance equal to the circumference of the
                 Earth: 40,076 kilometers. Over the course of a decade or more,
-                thousands of walks, backpacking trips, paddling adventures,
+                thousands of walks, backpacking trips, kayak adventures,
                 ski tours, and snowshoe excursions will become the real-world
                 building blocks of two imagined journeys that together circle
                 the globe: <strong className="journey-voyager">Voyager</strong>{' '}
                 and the{' '}
                 <strong className="journey-far-point">Far Point Trail</strong>.
-                Those imagined routes pass through 32 countries that together
-                are home to nearly 58% of the world's population.
+
               </p>
               <p>
                 Voyager begins high in the remote Southern Alps of New Zealand and
                 travels, <i>in imagination</i>, 20,038 kilometers through Australia, Asia, over the summit of Mount Everest,
                 and through Europe to its destination: the Cathedral of St. James in
                 Santiago de Compostela, Spain - the famed terminus of the Camino
-                de Santiago and the exact opposite side of the Earth (antipode) of its starting point.
+                de Santiago and the exact opposite side of the Earth - the antipode of its starting point.
               </p>
               <p>
                 The reality behind Voyager is far less direct, but no less
-                meaningful. Every local walk, winter outing, river float, and day
-                hike contributes to the journey. With a focus on autumn, winter,
-                and spring adventures near my home in Calgary, Alberta, Voyager
-                will also chronicle travels to all fifty U.S. states, Canada's
-                thirteen provinces and territories, and walking explorations of
-                many of the world's great cities.
+                meaningful. The intention of Voyager is to visit 100 parks located throughout 
+                the world and walk, kayak, raft,ski or snowshoe 100 kilometers in each. The parks are the places where the virtual
+                 Voyager's path intersects with the real world, and the activities are the steps that move it forward. With each new
+                  adventure, Voyager's progress path will grow on the globe, bringing it closer to its destination
+                   and creating a rich tapestry of stories, photos, and videos along the way.
               </p>
               <p>
                 The second half of the project, the Far Point Trail, is Voyager's
@@ -1946,19 +5213,22 @@ function App() {
             </div>
           )}
         </article>
+        <div className={`desktop-search-content${desktopContentTab === 'story' ? ' desktop-search-content-hidden' : ''}`}>
+          <SearchPanel onActivitySelect={handleSearchActivitySelect} />
+        </div>
         <div className="mobile-mode-content mobile-progress-content">
-          <JourneySummary />
+          <JourneySummary progress={animatedJourneyProgress} />
         </div>
         <div className="mobile-mode-content mobile-donate-content">
           <CharityPanel />
         </div>
         <div className="mobile-mode-content mobile-search-content">
-          <SearchPanel />
+          <SearchPanel onActivitySelect={handleSearchActivitySelect} />
         </div>
       </section>
       <section className="experience-panel" aria-label="Project progress and map">
         <div className="experience-top">
-          <JourneySummary />
+          <JourneySummary progress={animatedJourneyProgress} />
           <CharityPanel />
         </div>
         <div className="globe-panel" aria-label="Interactive 3D globe">
@@ -1974,11 +5244,46 @@ function App() {
             <span aria-hidden="true">Drag Me!</span>
           </button>
           <GlobeView
+            session={session}
             selectedActivityId={selectedActivity?.id ?? null}
+            focusActivityId={mapFocusActivityId}
+            focusActivityKey={mapFocusActivityKey}
+            focusProgressActivityId={mapProgressFocusActivityId}
+            focusProgressActivityKey={mapProgressFocusActivityKey}
+            journeyProgress={journeyProgress}
             onActivitySelect={handleActivitySelect}
+            onGlobeReadyChange={handleGlobeReadyChange}
+            onProgressActivitySelect={handleProgressActivitySelect}
           />
         </div>
       </section>
+      {showLogoLightbox && (
+        <div
+          className="route-story-lightbox logo-lightbox"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Project Far Point logo"
+          onClick={() => setShowLogoLightbox(false)}
+        >
+          <button
+            className="route-story-lightbox-close"
+            type="button"
+            onClick={() => setShowLogoLightbox(false)}
+            aria-label="Close logo"
+          >
+            Close
+          </button>
+          <figure
+            className="route-story-lightbox-figure logo-lightbox-figure"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <img
+              src={logoUrl}
+              alt="Project FarPoint logo with planet Earth in space"
+            />
+          </figure>
+        </div>
+      )}
     </main>
   );
 }
