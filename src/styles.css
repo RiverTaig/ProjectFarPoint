@@ -1093,6 +1093,84 @@ h1 {
   margin: 0;
 }
 
+.progress-story-editor {
+  display: grid;
+  gap: 12px;
+  max-width: 820px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(155, 228, 255, 0.16);
+  border-radius: 8px;
+}
+
+.progress-story-editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.progress-story-editor button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.progress-story-draft {
+  min-height: 420px;
+  width: 100%;
+  resize: vertical;
+  padding: 12px 14px;
+  color: #fffef8;
+  font: inherit;
+  line-height: 1.55;
+  background: rgba(2, 6, 17, 0.72);
+  border: 1px solid rgba(155, 228, 255, 0.22);
+  border-radius: 8px;
+}
+
+.progress-story-draft:focus {
+  border-color: rgba(155, 228, 255, 0.58);
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(51, 198, 255, 0.12);
+}
+
+.progress-image-upload {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.8fr) minmax(180px, 1.2fr) minmax(180px, 1.1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.progress-image-upload label {
+  display: grid;
+  gap: 5px;
+  color: rgba(155, 228, 255, 0.9);
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.progress-image-upload input {
+  min-width: 0;
+  padding: 8px 10px;
+  color: #fffef8;
+  font: inherit;
+  font-size: 0.86rem;
+  background: rgba(2, 6, 17, 0.72);
+  border: 1px solid rgba(155, 228, 255, 0.2);
+  border-radius: 8px;
+}
+
+.progress-image-upload input[type='file'] {
+  padding: 6px;
+}
+
+.progress-image-upload input:focus {
+  border-color: rgba(155, 228, 255, 0.58);
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(51, 198, 255, 0.12);
+}
+
 .route-story-video {
   width: 100%;
   max-width: 820px;
@@ -2247,6 +2325,10 @@ h1 {
   .summary-progress-text {
     margin-top: 10px;
     font-size: 0.72rem;
+  }
+
+  .progress-image-upload {
+    grid-template-columns: 1fr;
   }
 
   .charity-panel {

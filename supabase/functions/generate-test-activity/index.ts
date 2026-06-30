@@ -212,7 +212,7 @@ Deno.serve(async (request) => {
         updated_at: new Date().toISOString(),
       })
       .select(
-        'id,name,sport_type,started_at,pfp_type,trail_name,city,state,province,country,continent,corrected_distance,distance_made_good,strava_type,strava_url,text_description,geometry_simplified_medium,geometry_geojson',
+        'id,name,sport_type,started_at,pfp_type,trail_name,city,state,province,country,continent,corrected_distance,distance_made_good,strava_type,strava_url,text_description,progress_story,geometry_simplified_medium,geometry_geojson',
       )
       .single();
 

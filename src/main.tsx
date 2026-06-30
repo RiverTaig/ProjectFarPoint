@@ -43,11 +43,12 @@ type ProjectActivity = {
   strava_type: 'Activity' | 'Route' | null;
   strava_url: string | null;
   text_description: string | null;
-  geometry_simplified_medium: {
+  progress_story?: string | null;
+  geometry_simplified_medium?: {
     type: 'LineString';
     coordinates: number[][];
   } | null;
-  geometry_geojson: {
+  geometry_geojson?: {
     type: 'LineString';
     coordinates: number[][];
   } | null;
@@ -71,6 +72,7 @@ type SelectedProjectActivity = Pick<
   | 'strava_type'
   | 'strava_url'
   | 'text_description'
+  | 'progress_story'
 >;
 
 type ProjectActivityImage = {
@@ -210,7 +212,7 @@ type ArcgisWorldCitiesResponse = {
 };
 
 const projectActivitySelectColumns =
-  'id,name,sport_type,started_at,pfp_type,trail_name,city,state,province,country,continent,corrected_distance,distance_made_good,strava_type,strava_url,text_description,geometry_simplified_medium,geometry_geojson';
+  'id,name,sport_type,started_at,pfp_type,trail_name,city,state,province,country,continent,corrected_distance,distance_made_good,strava_type,strava_url,text_description,geometry_simplified_medium';
 const arcgisWorldGeocodeServiceUrl =
   'https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer';
 const arcgisWorldCitiesLayerUrl =
@@ -446,7 +448,7 @@ function getProgressPosition(path: ProgressPath, distanceKilometers: number) {
 }
 
 function createActivityPaths(activity: ProjectActivity) {
-  const geometry = activity.geometry_geojson ?? activity.geometry_simplified_medium;
+  const geometry = activity.geometry_simplified_medium ?? activity.geometry_geojson;
 
   if (!geometry?.coordinates?.length) {
     return [];
@@ -1973,7 +1975,7 @@ function GlobeView({
       supabase
         .from('project_activities')
         .select(projectActivitySelectColumns)
-        .not('geometry_geojson', 'is', null)
+        .or('geometry_simplified_medium.not.is.null,geometry_geojson.not.is.null')
         .then(({ data, error }) => {
           if (isDestroyed || error || !data?.length) {
             return;
@@ -2108,6 +2110,8 @@ function GlobeView({
         return;
       }
 
+      setIsGlobeReady(true);
+      onGlobeReadyChange(true);
       updateProgressLayerVisibility();
       waitForInitialImagery().catch(startOpeningAnimation);
       initialImageryFallbackTimeout = window.setTimeout(
@@ -3578,33 +3582,13 @@ function renderActivityParagraph(
     : [<p key={`text-${paragraphIndex}`}>{paragraph}</p>];
 }
 
-function ActivityStory({
-  activity,
-  onBack,
-  onFocusActivity,
-  onFocusProgressPosition,
-  isArriving = false,
-}: ActivityStoryProps) {
+function useProjectActivityImages(activityId: string) {
   const [activityImages, setActivityImages] = useState<ProjectActivityImage[]>([]);
-  const [activeImage, setActiveImage] = useState<ProjectActivityImage | null>(null);
-  const openActivityImage = useCallback((image: ProjectActivityImage) => {
-    setActiveImage(image);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  const reloadActivityImages = useCallback(() => {
+    setReloadKey((currentKey) => currentKey + 1);
   }, []);
-  const description = activity.text_description?.trim();
-  const paragraphs = description
-    ? description.split(/\n{2,}/).map((paragraph) => paragraph.trim())
-    : ['No route description has been added yet.'];
-  const correctedDistance = formatKilometers(activity.corrected_distance);
-  const distanceMadeGood = formatKilometers(activity.distance_made_good);
-  const activityDateTime = formatActivityDateTime(activity.started_at);
-  const stravaLinkLabel = activity.strava_type
-    ? `Strava ${activity.strava_type}`
-    : 'Strava';
-  const activityRouteClass =
-    activity.pfp_type === 'Far Point Trail'
-      ? 'journey-far-point'
-      : 'journey-voyager';
-  const activeImageUrl = activeImage ? getActivityImagePublicUrl(activeImage) : '';
 
   useEffect(() => {
     let isCancelled = false;
@@ -3617,7 +3601,7 @@ function ActivityStory({
     supabase
       .from('project_activity_images')
       .select('id,activity_id,name,storage_bucket,storage_path,caption,alt_text,sort_order')
-      .eq('activity_id', activity.id)
+      .eq('activity_id', activityId)
       .order('sort_order', { ascending: true })
       .order('created_at', { ascending: true })
       .then(({ data, error }) => {
@@ -3637,7 +3621,41 @@ function ActivityStory({
     return () => {
       isCancelled = true;
     };
-  }, [activity.id]);
+  }, [activityId, reloadKey]);
+
+  return {
+    activityImages,
+    reloadActivityImages,
+  };
+}
+
+function ActivityStory({
+  activity,
+  onBack,
+  onFocusActivity,
+  onFocusProgressPosition,
+  isArriving = false,
+}: ActivityStoryProps) {
+  const { activityImages } = useProjectActivityImages(activity.id);
+  const [activeImage, setActiveImage] = useState<ProjectActivityImage | null>(null);
+  const openActivityImage = useCallback((image: ProjectActivityImage) => {
+    setActiveImage(image);
+  }, []);
+  const description = activity.text_description?.trim();
+  const paragraphs = description
+    ? description.split(/\n{2,}/).map((paragraph) => paragraph.trim())
+    : ['No route description has been added yet.'];
+  const correctedDistance = formatKilometers(activity.corrected_distance);
+  const distanceMadeGood = formatKilometers(activity.distance_made_good);
+  const activityDateTime = formatActivityDateTime(activity.started_at);
+  const stravaLinkLabel = activity.strava_type
+    ? `Strava ${activity.strava_type}`
+    : 'Strava';
+  const activityRouteClass =
+    activity.pfp_type === 'Far Point Trail'
+      ? 'journey-far-point'
+      : 'journey-voyager';
+  const activeImageUrl = activeImage ? getActivityImagePublicUrl(activeImage) : '';
 
   return (
     <article className={`route-story${isArriving ? ' route-story-arriving' : ''}`}>
@@ -3728,25 +3746,53 @@ function ActivityStory({
 type ProgressStoryProps = {
   activity: SelectedProjectActivity;
   progressPosition: ProgressPosition | null;
+  session: Session | null;
   onBack: () => void;
   onFocusActivity: (activityId: string) => void;
   onFocusProgressPosition: (activityId: string) => void;
+  onProgressStorySaved: (activity: SelectedProjectActivity) => void;
   isArriving?: boolean;
 };
 
 function ProgressStory({
   activity,
   progressPosition,
+  session,
   onBack,
   onFocusActivity,
   onFocusProgressPosition,
+  onProgressStorySaved,
   isArriving = false,
 }: ProgressStoryProps) {
+  const { activityImages, reloadActivityImages } = useProjectActivityImages(activity.id);
   const [nearbyPlaceLookup, setNearbyPlaceLookup] = useState<NearbyPlaceLookup>({
     status: 'idle',
   });
+  const [activeImage, setActiveImage] = useState<ProjectActivityImage | null>(null);
+  const [draftStory, setDraftStory] = useState(activity.progress_story ?? '');
+  const [isEditingStory, setIsEditingStory] = useState(false);
+  const [isGeneratingStory, setIsGeneratingStory] = useState(false);
+  const [isSavingStory, setIsSavingStory] = useState(false);
+  const [storyStatus, setStoryStatus] = useState('');
+  const [storyError, setStoryError] = useState('');
+  const [uploadName, setUploadName] = useState('');
+  const [uploadCaption, setUploadCaption] = useState('');
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [isUploadingImage, setIsUploadingImage] = useState(false);
+  const [imageUploadStatus, setImageUploadStatus] = useState('');
+  const [imageUploadError, setImageUploadError] = useState('');
   const progressDistance = progressPosition?.progressKilometers ?? null;
   const position = progressPosition?.position ?? null;
+  const isOwner = isProjectOwner(session);
+  const savedStory = activity.progress_story?.trim() ?? '';
+  const displayedStory = isEditingStory ? draftStory.trim() : savedStory;
+  const storyParagraphs = displayedStory
+    ? displayedStory.split(/\n{2,}/).map((paragraph) => paragraph.trim())
+    : [];
+  const activeImageUrl = activeImage ? getActivityImagePublicUrl(activeImage) : '';
+  const openActivityImage = useCallback((image: ProjectActivityImage) => {
+    setActiveImage(image);
+  }, []);
   const progressDistanceLabel =
     progressDistance === null ? 'Calculating...' : formatKilometers(progressDistance);
   const percentCompleteLabel =
@@ -3768,6 +3814,13 @@ function ProgressStory({
         : nearbyPlaceLookup.status === 'error'
           ? 'nearest city unavailable'
           : 'nearest city pending';
+
+  useEffect(() => {
+    setDraftStory(activity.progress_story ?? '');
+    setIsEditingStory(false);
+    setStoryStatus('');
+    setStoryError('');
+  }, [activity.id, activity.progress_story]);
 
   useEffect(() => {
     if (!position) {
@@ -3795,6 +3848,200 @@ function ProgressStory({
       abortController.abort();
     };
   }, [position?.latitude, position?.longitude]);
+
+  async function handleGenerateProgressStory() {
+    setStoryStatus('');
+    setStoryError('');
+
+    if (!isOwner) {
+      setStoryError('Only the Project Far Point owner can generate progress stories.');
+      return;
+    }
+
+    if (!supabase) {
+      setStoryError('Supabase is not configured.');
+      return;
+    }
+
+    if (!position || progressDistance === null) {
+      setStoryError('The progress position is still being calculated.');
+      return;
+    }
+
+    setIsGeneratingStory(true);
+
+    try {
+      const { data, error: functionError } = await supabase.functions.invoke(
+        'generate-progress-story',
+        {
+          body: {
+            activityId: activity.id,
+            latitude: position.latitude,
+            longitude: position.longitude,
+            progressKilometers: progressDistance,
+            percentComplete: (progressDistance / halfJourneyKilometers) * 100,
+            nearbyPlace:
+              nearbyPlaceLookup.status === 'ready' ? nearbyPlaceLookup.label : null,
+          },
+        },
+      );
+
+      if (functionError) {
+        throw new Error(
+          await getFunctionErrorMessage(
+            functionError,
+            'Could not generate progress story.',
+          ),
+        );
+      }
+
+      if (!data?.story || typeof data.story !== 'string') {
+        throw new Error('The generated story was not returned.');
+      }
+
+      setDraftStory(data.story.trim());
+      setIsEditingStory(true);
+      setStoryStatus('Generated a draft. Review and save when it feels right.');
+    } catch (generateError) {
+      setStoryError(
+        generateError instanceof Error
+          ? generateError.message
+          : 'Could not generate progress story.',
+      );
+    } finally {
+      setIsGeneratingStory(false);
+    }
+  }
+
+  async function handleSaveProgressStory() {
+    setStoryStatus('');
+    setStoryError('');
+
+    if (!isOwner) {
+      setStoryError('Only the Project Far Point owner can save progress stories.');
+      return;
+    }
+
+    if (!supabase) {
+      setStoryError('Supabase is not configured.');
+      return;
+    }
+
+    setIsSavingStory(true);
+
+    try {
+      const nextStory = draftStory.trim() || null;
+      const { data, error } = await supabase
+        .from('project_activities')
+        .update({
+          progress_story: nextStory,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', activity.id)
+        .select(projectActivitySelectColumns)
+        .single();
+
+      if (error) {
+        throw error;
+      }
+
+      onProgressStorySaved(data as SelectedProjectActivity);
+      setIsEditingStory(false);
+      setStoryStatus(nextStory ? 'Progress story saved.' : 'Progress story cleared.');
+    } catch (saveError) {
+      setStoryError(
+        saveError instanceof Error ? saveError.message : 'Could not save progress story.',
+      );
+    } finally {
+      setIsSavingStory(false);
+    }
+  }
+
+  async function handleUploadProgressImage(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setImageUploadStatus('');
+    setImageUploadError('');
+
+    if (!isOwner) {
+      setImageUploadError('Only the Project Far Point owner can upload images.');
+      return;
+    }
+
+    if (!supabase) {
+      setImageUploadError('Supabase is not configured.');
+      return;
+    }
+
+    const name = uploadName.trim();
+
+    if (!name || !uploadFile) {
+      setImageUploadError('Choose an image file and give it a shortcode name.');
+      return;
+    }
+
+    if (!imageNamePattern.test(name)) {
+      setImageUploadError(
+        'Image names must start with a letter or number and can only use letters, numbers, hyphens, and underscores.',
+      );
+      return;
+    }
+
+    setIsUploadingImage(true);
+
+    try {
+      const extension = getImageFileExtension(uploadFile);
+      const storagePath = `${activity.id}/${name}.${extension}`;
+      const { error: uploadError } = await supabase.storage
+        .from('project-activity-images')
+        .upload(storagePath, uploadFile, {
+          cacheControl: '31536000',
+          contentType: uploadFile.type || undefined,
+          upsert: true,
+        });
+
+      if (uploadError) {
+        throw uploadError;
+      }
+
+      const caption = uploadCaption.trim();
+      const { error: imageError } = await supabase
+        .from('project_activity_images')
+        .upsert(
+          {
+            activity_id: activity.id,
+            name,
+            storage_bucket: 'project-activity-images',
+            storage_path: storagePath,
+            caption: caption || null,
+            alt_text: caption || name,
+            sort_order: activityImages.length,
+            content_type: uploadFile.type || null,
+            size_bytes: uploadFile.size,
+          },
+          {
+            onConflict: 'activity_id,name',
+          },
+        );
+
+      if (imageError) {
+        throw imageError;
+      }
+
+      setUploadName('');
+      setUploadCaption('');
+      setUploadFile(null);
+      reloadActivityImages();
+      setImageUploadStatus(
+        `Uploaded ${name}. Use {Image name="${name}"} in the story.`,
+      );
+    } catch (uploadError) {
+      setImageUploadError(
+        uploadError instanceof Error ? uploadError.message : 'Could not upload image.',
+      );
+    } finally {
+      setIsUploadingImage(false);
+    }
+  }
 
   return (
     <article className={`route-story progress-story${isArriving ? ' route-story-arriving' : ''}`}>
@@ -3850,8 +4097,122 @@ function ProgressStory({
         </div>
       </dl>
       <div className="progress-story-placeholder">
-        <p>Progress reflections will appear here.</p>
+        {storyParagraphs.length > 0 ? (
+          <div className="route-story-copy">
+            {storyParagraphs.flatMap((paragraph, index) =>
+              renderActivityParagraph(paragraph, index, activityImages, openActivityImage),
+            )}
+          </div>
+        ) : (
+          <p>Progress reflections will appear here.</p>
+        )}
       </div>
+      {isOwner && (
+        <section className="progress-story-editor" aria-label="Progress story editor">
+          <div className="progress-story-editor-actions">
+            <button
+              className="route-story-map-link"
+              type="button"
+              onClick={handleGenerateProgressStory}
+              disabled={isGeneratingStory || !position}
+            >
+              {isGeneratingStory ? 'Generating...' : 'Generate Story'}
+            </button>
+            <button
+              className="route-story-map-link"
+              type="button"
+              onClick={() => setIsEditingStory((currentValue) => !currentValue)}
+            >
+              {isEditingStory ? 'Close Editor' : 'Edit Story'}
+            </button>
+            {isEditingStory && (
+              <button
+                className="route-story-map-link"
+                type="button"
+                onClick={handleSaveProgressStory}
+                disabled={isSavingStory}
+              >
+                {isSavingStory ? 'Saving...' : 'Save Story'}
+              </button>
+            )}
+          </div>
+          {isEditingStory && (
+            <textarea
+              className="progress-story-draft"
+              value={draftStory}
+              onChange={(event) => setDraftStory(event.target.value)}
+              aria-label="Progress story draft"
+            />
+          )}
+          {storyStatus && <p className="activity-status">{storyStatus}</p>}
+          {storyError && <p className="activity-error">{storyError}</p>}
+          <form className="progress-image-upload" onSubmit={handleUploadProgressImage}>
+            <label>
+              Image name
+              <input
+                type="text"
+                value={uploadName}
+                onChange={(event) => setUploadName(event.target.value)}
+                placeholder="e.g. ocean_current"
+              />
+            </label>
+            <label>
+              Caption
+              <input
+                type="text"
+                value={uploadCaption}
+                onChange={(event) => setUploadCaption(event.target.value)}
+                placeholder="Optional caption"
+              />
+            </label>
+            <label>
+              Image file
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/gif"
+                onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)}
+              />
+            </label>
+            <button
+              className="route-story-map-link"
+              type="submit"
+              disabled={isUploadingImage}
+            >
+              {isUploadingImage ? 'Uploading...' : 'Upload Image'}
+            </button>
+          </form>
+          {imageUploadStatus && <p className="activity-status">{imageUploadStatus}</p>}
+          {imageUploadError && <p className="activity-error">{imageUploadError}</p>}
+        </section>
+      )}
+      {activeImage && (
+        <div
+          className="route-story-lightbox"
+          role="dialog"
+          aria-modal="true"
+          aria-label={activeImage.caption || activeImage.name}
+          onClick={() => setActiveImage(null)}
+        >
+          <button
+            className="route-story-lightbox-close"
+            type="button"
+            onClick={() => setActiveImage(null)}
+            aria-label="Close image"
+          >
+            Close
+          </button>
+          <figure
+            className="route-story-lightbox-figure"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <img
+              src={activeImageUrl}
+              alt={activeImage.alt_text || activeImage.caption || activeImage.name}
+            />
+            {activeImage.caption && <figcaption>{activeImage.caption}</figcaption>}
+          </figure>
+        </div>
+      )}
     </article>
   );
 }
@@ -4004,7 +4365,7 @@ function SearchPanel({ onActivitySelect }: SearchPanelProps) {
         const { data, error } = await supabase
           .from('project_activities')
           .select(projectActivitySelectColumns)
-          .not('geometry_geojson', 'is', null);
+          .or('geometry_simplified_medium.not.is.null,geometry_geojson.not.is.null');
 
         if (isCancelled) {
           return;
@@ -4438,7 +4799,7 @@ function App() {
     useState<string | null>(null);
   const [mapProgressFocusActivityKey, setMapProgressFocusActivityKey] = useState(0);
   const [showLogoLightbox, setShowLogoLightbox] = useState(false);
-  const [isGlobeReady, setIsGlobeReady] = useState(false);
+  const [, setIsGlobeReady] = useState(false);
   const logoUrl = `${import.meta.env.BASE_URL}ProjectFarPoint.png`;
   const progressPositionsByActivityId = useMemo(() => {
     return new globalThis.Map(
@@ -4454,7 +4815,7 @@ function App() {
   );
   const animatedJourneyProgress = useAnimatedJourneyProgress(
     journeyProgress,
-    isGlobeReady,
+    allProjectActivities.length > 0,
   );
   const selectedProgressPosition = selectedActivity
     ? progressPositionsByActivityId.get(selectedActivity.id) ?? null
@@ -4632,6 +4993,19 @@ function App() {
     setSelectedActivity(null);
     setActivityPanelMode('story');
   }, []);
+  const handleProgressStorySaved = useCallback((activity: SelectedProjectActivity) => {
+    setSelectedActivity(activity);
+    setAllProjectActivities((currentActivities) =>
+      currentActivities.map((currentActivity) =>
+        currentActivity.id === activity.id
+          ? {
+            ...currentActivity,
+            progress_story: activity.progress_story,
+          }
+          : currentActivity,
+      ),
+    );
+  }, []);
   const handleGlobeReadyChange = useCallback((isReady: boolean) => {
     setIsGlobeReady(isReady);
   }, []);
@@ -4769,9 +5143,11 @@ function App() {
               key={`${selectedActivity.id}-${selectedActivityAnimationKey}-progress`}
               activity={selectedActivity}
               progressPosition={selectedProgressPosition}
+              session={session}
               onBack={handleBackToIntro}
               onFocusActivity={handleActivityFocus}
               onFocusProgressPosition={handleProgressPositionFocus}
+              onProgressStorySaved={handleProgressStorySaved}
               isArriving
             />
           ) : selectedActivity ? (
@@ -4874,7 +5250,7 @@ function App() {
             focusActivityKey={mapFocusActivityKey}
             focusProgressActivityId={mapProgressFocusActivityId}
             focusProgressActivityKey={mapProgressFocusActivityKey}
-            journeyProgress={animatedJourneyProgress}
+            journeyProgress={journeyProgress}
             onActivitySelect={handleActivitySelect}
             onGlobeReadyChange={handleGlobeReadyChange}
             onProgressActivitySelect={handleProgressActivitySelect}
