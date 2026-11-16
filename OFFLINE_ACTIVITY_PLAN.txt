@@ -1,0 +1,372 @@
+Offline satellite-message activity plan
+
+Deletion reference fix:
+ - Completed requests remain while their activities exist for history and
+   duplicate protection. They should not block intentional activity deletion.
+ - Run supabase/migrations/20261116130000_offline_request_delete_with_activity.sql
+   once in SQL Editor to make result_activity_id cascade on activity deletion.
+ - Deleting an activity then removes its request and (through existing image
+   foreign keys) image metadata. Storage files are separate and are not deleted
+   by this change. Deletion/correction credit recalculation is still step 9.
+ - A deliberately deleted hike can be created again by resubmitting its link,
+   because its old duplicate-protection request is deleted with it.
+ - No requests are purged on ordinary completion, and no existing data is
+   deleted merely by running this migration. No Edge Function update needed.
+
+Offline description/photo enhancement (2026-11-16):
+ - Ken can paste satellite text into the offline form and choose phone photos.
+   Images have names/captions, thumbnails, and buttons to insert references.
+ - Single photo: {Image name="camp" caption="Our campsite"}
+   Gallery: {ImageCarousel images="camp,view"}
+ - New unreferenced photos are appended as a gallery after the description.
+ - Uses existing project_activities.text_description, project_activity_images,
+   and project-activity-images storage. No Ken login or new secret is needed.
+ - New server endpoint offline-activity-content verifies the same password and
+   restricts writes to completed, active offline hikes of the configured owner.
+   It never changes geometry, distance, or journey progress.
+ - Limits: 10 JPEG/PNG/WebP/GIF photos, 10 MB each; 20,000 text characters.
+   HEIC requires conversion. Image references count toward the text limit.
+ - Hike saves first; text/photo failures remain distinct and retryable without
+   adding another hike. Content-addressed file paths and metadata identity
+   prevent duplicate photos on retry. Existing names cannot overwrite a
+   different file. The manual Load saved text and images button was removed
+   at River's request: Ken submits, waits for confirmation, and is done.
+   Automatic content reads and partial-upload retry handling remain in place.
+ - Deployment required: run SQL
+   supabase/migrations/20261116120000_offline_activity_content.sql, then create
+   offline-activity-content from supabase/deploy/offline-activity-content.ts
+   with Verify JWT OFF. Keep the existing secrets and origin allowlist.
+ - Instructions: supabase/OFFLINE_CONTENT_SETUP.md. Website code is local;
+   no remote migration, function deployment, or live content upload was done.
+ - Verification so far: all 41 unit tests, Deno source check, actual local
+   PostgreSQL/PostGIS content/permissions checks, and mocked browser tests
+   passed (text paste, reference insertion, caption/file selection, upload
+   failure/retry, no duplicate hike, preserved drafts, mobile layout).
+ - Production build passed (existing Vite large-chunk warning). The generated
+   content-function bundle and original submission-function source passed Deno
+   checks. A browser test also verified that a failed optional refresh after
+   confirmed content saves does not incorrectly report those saves as failed.
+
+Status: Execute one numbered step at a time with River. Steps 1-6 reviewed.
+Step 5 deployed by River: SQL applied, both secrets saved, Edge Function created,
+JWT verification off, wrong-password and valid-password/missing-parameters tests
+returned the expected responses. River subsequently confirmed a successful
+offline submission after APP_ORIGINS was updated for the development address.
+The Far Point Trail record has 22.018 km of distance and credited progress.
+Step 6 frontend works locally; deployment of website changes is separate.
+No live text/image uploads were performed while implementing this enhancement.
+
+Step 1 URL format agreed on 2026-11-15:
+https://projectfarpoint.com/offline?t=TA&p=V&dt=YYYYMMDDTHHMM&s=LON,LAT&e=LON,LAT&pw=PASSWORD
+
+Authentication decision (supersedes earlier sign-in recommendation):
+ - River chose a shared pw parameter instead of requiring Ken to sign in.
+ - Replace PASSWORD with the agreed shared password when composing the link.
+ - Store the expected value as Supabase Edge Function secret
+   OFFLINE_SUBMISSION_PASSWORD; never hardcode it into public website code.
+ - Server ownership is fixed by OFFLINE_ACTIVITY_OWNER_ID, not a URL field.
+ - Ken opens the link and presses Submit. The page sends pw in the POST body;
+   GET/message previews never create activities. No database login is required.
+ - This is intentionally lightweight protection: possession of the complete
+   link permits submissions. River accepted this tradeoff for this workflow.
+ - Do not persist pw in request metadata, activity records, or result JSON.
+ - Record shared-password authorization without claiming a signed-in identity.
+
+Parameter contract:
+ - t: registered short trail code; TA = Te Araroa.
+ - p: project path; V = Voyager, F = Far Point Trail.
+ - dt: hike start time, YYYYMMDDTHHMM, using the registered trail's local
+   timezone. TA uses Pacific/Auckland; resolve daylight saving from that zone.
+   Ambiguous or nonexistent local times require correction/clarification.
+ - s and e: start/end coordinates, decimal longitude,latitude in WGS84.
+ - pw: shared submission password, validated only by the server on POST.
+ - Template placeholders must be replaced with actual values before use.
+ - Opening the URL displays details; an authorized Submit action creates the
+   activity and returns a readable JSON result. Repeated submissions must
+   return the existing result rather than duplicate the activity.
+
+Steps 1-3 complete: River confirmed foundation SQL and trail import succeeded.
+Step 4: River reviewed the test URLs and confirmed the preview works well.
+
+Step 5 implementation and deployment record (completed by River):
+ - SQL: supabase/migrations/20261115130000_offline_activity_processing.sql
+ - Edge Function: supabase/functions/submit-offline-activity/index.ts
+ - Dashboard single-file bundle: supabase/deploy/submit-offline-activity.ts
+ - Setup instructions: supabase/OFFLINE_STEP5.md
+ - Run the new migration once in SQL Editor. No repeat of step 3 is needed.
+ - Set OFFLINE_SUBMISSION_PASSWORD and OFFLINE_ACTIVITY_OWNER_ID in Edge
+   Function secrets. Preserve APP_ORIGINS entries needed by existing features.
+ - Deploy submit-offline-activity with JWT verification disabled, because the
+   handler performs its own shared-password check. Database RPCs are callable
+   only by service_role, never directly by public or signed-in browser clients.
+ - Owner UUID comes from River's existing project_activities.owner_user_id.
+   Ken needs no account; offline_activity_submitters is unused in this mode.
+ - A claimed request pins its trail version. Processing has a five-minute lease;
+   concurrent duplicates return processing, completed duplicates return the
+   existing activity, and failures/expired leases can be retried safely.
+ - Activity insert, credit recalculation, and request completion are atomic.
+ - Authoritative stored distance uses PostGIS geography. Voyager credit uses
+   the existing seasonal function; backdated reports recalculate later credit.
+ - Far Point Trail applies the stated no-repeat rule with a 15 m buffer against
+   the owner's earlier Far Point geometry, without a seasonal reset. This fills
+   a missing Far Point credit calculation in the current Strava import code;
+   it does not change those Strava endpoints. Backdated Far Point reports also
+   recalculate the owner's later Far Point credit.
+ - The same extraction module is now shared by browser preview and server.
+ - Existing Strava endpoints do not share the offline transaction lock yet;
+   coordinate imports during validation. Unified import/replacement work is
+   still steps 7-8, and no automatic Strava replacement is enabled here.
+ - Testing: 25 extraction/handler tests, Deno source typecheck, and isolated
+   actual PostgreSQL/PostGIS checks passed. SQL checks cover completion,
+   duplicate claims, failed/expired retries, stale tokens, backdated Voyager
+   credit, Far Point overlap, immutable version pinning, and RPC permissions.
+ - No remote SQL/deployment or live activity submission was performed by Codex.
+ - Final production build passed after the shared-module move. Deno checks
+   passed for both the source entrypoint and generated Dashboard bundle.
+
+
+Step 6 implementation (2026-11-16):
+ - Verification: all 31 extraction/handler/client tests passed. Headless Edge
+   checks passed for URL/history sanitization, no password in referrers, zero
+   automatic POSTs, pending/manual retry, double-click protection, success and
+   duplicate JSON, failed responses, password loss on reload, safe examples,
+   and mobile document width. All browser POSTs were intercepted; none reached
+   production. Final npm run build passed, with Vite's large-chunk warning.
+ - /offline reviews the hike, provides a separate explicit Submit activity
+   button, and renders the server's readable JSON result. No automatic POST
+   occurs on opening, previewing, refreshing, or selecting an example.
+ - pw is removed from the address bar/current history entry before rendering
+   the page. It is held in tab memory and a masked input, not browser storage.
+   Pasting another link also removes pw from the visible textarea. After a
+   reload, Ken may need to reenter it in the password field.
+ - Offline pages use no-referrer behavior; POST sends pw only in the JSON body.
+ - Uses the existing VITE_SUPABASE_URL and public VITE_SUPABASE_ANON_KEY to call
+   submit-offline-activity. No server password or service key is embedded.
+ - Locks the form during submission and blocks double clicks. Completed and
+   already_processed responses show confirmed saved state. Processing responses
+   allow an explicit Check submission after a delay; no automatic retry loop.
+   Failed/unconfirmed outcomes show readable feedback and allow manual retry.
+ - URL edits invalidate the old preview/result. Real submissions require a
+   valid preview and password. Test examples carry preview=1 and are blocked
+   from submission, including the example links recorded below.
+ - The displayed preview distance is provisional; the saved distance/credit
+   returned by the server is authoritative. Step 7 is still map/progress review
+   and step 8 remains Strava replacement, not part of this UI implementation.
+ - No SQL migration or Edge Function redeployment is required for step 6.
+   Deploy the website code through the existing website hosting workflow.
+ - Successful end-to-end live creation still needs a real intended hike or a
+   separately agreed write test; development checks intercept submission calls
+   rather than adding illustrative hikes to production.
+
+Step 6 manual review:
+ - Start npm run dev and open /offline on the printed local URL. Example links
+   remain safe/read-only. Review the summary, map, and preview JSON.
+ - For an intended real hike, open its normal satellite URL with pw included.
+   The address bar/visible URL should lose pw, the password input is masked,
+   and the hike summary previews automatically. No activity exists until Submit.
+ - Submit sends the body to the existing deployed function. Expect completed
+   or already_processed JSON, or a readable error/pending result. A successful
+   live test has not been performed as part of implementation.
+ - Local browser requests must be included in APP_ORIGINS; preserve current
+   production/staging origins when editing that server secret.
+ - A missing VITE_SUPABASE_URL disables submission with a configuration message.
+   The same existing public Supabase settings used by the rest of the website
+   are used here. No shared password belongs in VITE_* variables.
+
+Step 4 verification:
+ - All 14 focused extraction/URL tests passed (npm run test:offline).
+ - Browser checks passed in headless Microsoft Edge: blue route, green route,
+   gap and off-trail errors, hiding stale map on failure, GeoJSON download,
+   and no horizontal document overflow at a 390px viewport.
+ - Browser recorded no uncaught page errors or Supabase write requests.
+ - Production build passed (npm run build); Vite reports its large-chunk warning.
+ - Fixed two existing React flatMap inference errors with explicit ReactNode
+   type arguments so the project typecheck passes; rendering behavior unchanged.
+
+Step 4 local preview and test URLs:
+ - Run npm run dev, then open the URLs below. Default Vite port is 5173;
+   substitute the port printed by Vite if it uses a different one.
+ - Preview uses repository GeoJSON. Preview itself never writes data. The new
+   Submit activity button POSTs to the deployed function for real hike links.
+   Example URLs now carry preview=1 and cannot submit activities.
+ - The page also accepts pasted production-format URLs and offers clickable
+   examples. Production links work only after deploying this code; use the
+   localhost links for this review. Tests are independent route examples,
+   not consecutive stages in one itinerary. Dates are illustrative local times.
+ - Spherical distances use radius 6371008.8 m; Supabase geography distance may
+   differ slightly when the server-based processor is implemented.
+ - Run npm run test:offline (Node 22.18+ or Node 24) for focused tests.
+
+A. 24.76 km south-to-north, Voyager; includes verified 5.84 km road segment:
+http://localhost:5173/offline?t=TA&p=V&dt=20261205T0800&s=175.631794,-40.310686&e=175.445552,-40.185459&preview=1
+
+B. 30.08 km south-to-north, Voyager:
+http://localhost:5173/offline?t=TA&p=V&dt=20261206T0800&s=169.133351,-44.659392&e=169.356974,-44.573907&preview=1
+
+C. 22.01 km south-to-north, Far Point Trail (green):
+http://localhost:5173/offline?t=TA&p=F&dt=20261207T0800&s=172.460770,-42.461725&e=172.583853,-42.339319&preview=1
+
+D. Reverse of A; same 24.76 km, geometry must run north-to-south:
+http://localhost:5173/offline?t=TA&p=V&dt=20261205T0800&s=175.445552,-40.185459&e=175.631794,-40.310686&preview=1
+
+E. Deliberate disconnected-chain selection; expect TRAIL_GAP:
+http://localhost:5173/offline?t=TA&p=V&dt=20261208T0800&s=174.770876,-41.343986&e=174.235252,-41.094737&preview=1
+
+F. Deliberate off-trail coordinate; expect OFF_TRAIL with nearest distance:
+http://localhost:5173/offline?t=TA&p=V&dt=20261208T0800&s=0,0&e=172.583853,-42.339319&preview=1
+
+Check: displayed distance, start/end labels and hiking direction, blue/green
+color, snapping distances, full intervening trail geometry, and readable errors.
+Download extracted GeoJSON is available for inspecting the complete path.
+The current preview validates calendar input but timezone ambiguity and journey
+credit remain server-processing tasks in step 5. It conservatively rejects
+endpoint branches, closed chains, and equally close distinct route positions.
+
+Step 3 preparation:
+ - River confirmed foundation SQL executed successfully in Supabase.
+ - Full geometry import exceeded SQL Editor size limit. Use the generated
+   supabase/imports/te-araroa-parts/ files in numeric order instead (00 setup,
+   01 through 06 data, 99 finalize with checksum verification).
+ - Foundation SQL: supabase/migrations/20261115120000_offline_activity_foundation.sql
+ - Trail import generator: scripts/prepare-te-araroa-import.mjs
+ - Generated import: supabase/imports/te-araroa-2026-27.sql
+ - Execution instructions and verification: supabase/OFFLINE_SETUP.md
+ - River confirmed foundation and geometry import executed successfully. Application
+   processing, extraction, replacement, and progress changes remain later steps.
+
+Step 2 decisions and inspection (2026-11-15):
+ - Endpoint snapping tolerance: 100 meters to the nearest point along a
+   segment, interpolating between vertices; reject points farther away.
+ - Preserve intentional ferry/car gaps. Reject cross-gap selections and ask
+   for separate reports on each connected side; never credit a connector.
+ - Initial trail administration uses SQL/import scripts, not an admin screen.
+ - Geometry inspection is documented in TE_ARAROA_GEOMETRY_REVIEW.txt:
+   466 sections, 28,027 vertices, seven exact-endpoint connected chains.
+   Array order is not route order. Long internal edges still need review;
+   this inspection cannot establish transport modes from geometry alone.
+   River verified the longest edge (5.842 km, section 46) is a valid straight
+   road section. Keep it connected and credit its distance normally. Large
+   vertex spacing alone is not a gap and must not cause automatic rejection.
+ - Proposed registry: trails (short code, name, timezone, current version)
+   and trail_versions (immutable GeoJSON, version, attribution/license).
+   Preserve original section IDs and derive connected chains for extraction.
+ - Source is about 1.1 MB; initially keep GeoJSON in trail_versions and
+   load the selected version server-side during submission processing.
+ - Step 3 will provide reviewable SQL and import scripts; no schema changes
+   or application implementation have been made during this review.
+
+Confirmed: Ken uses shared-password submission; readable JSON outcome preferred; dateTime is in
+link; completed records use project_activities with source='offline'; Voyager
+uses existing seasonal distance-made-good rules; matching Strava hikes replace
+offline credit, but offline hikes need never have a Strava recording.
+
+1. Finalize link and submission behavior.
+   Use the agreed compact URL contract above: t, p, dt, s, e, and pw. Coordinates
+   are longitude,latitude. Interpret dt as hike start in the trail's registered
+   timezone and store a timezone-aware instant plus the original local input.
+   Store receipt time separately. URL-encode parameter values as needed.
+   Ken opens the link and presses Submit; no account or sign-in is required.
+   Submit sends a password-authorized POST and displays readable JSON. Opening a
+   GET link must not write records because message previews/scanners open URLs.
+   Validate pw on the server against OFFLINE_SUBMISSION_PASSWORD. Never store
+   it with the activity or request parameters. The owner is server-configured.
+
+2. Register versioned trail geometry in Supabase.
+   Add trail registry/version storage, initially importing
+   public/TeAraroaTrail_2026_27.geojson as TeAraroa. Prefer GeoJSON in a
+   trail_versions table; inspect size and consider Supabase Storage with table
+   metadata for large assets. Keep versions immutable and pin requests to one.
+   Preserve attribution/license and restrict publishing to administrators.
+   Inspect section ordering, gaps, branches, and direction: this asset is a
+   MultiLineString and its arrays cannot simply be concatenated.
+   Agree on snapping tolerance and handling ambiguous/disconnected selections.
+
+3. Prepare and review SQL as a separate step.
+   Add offline_activity_requests with original parameters, stable request ID,
+   authentication method/owner, hike and receipt times, trail version, processing status,
+   error details, and resulting activity ID. Recommend retaining completed
+   requests for audit rather than deleting them; completed requests are never
+   treated as pending work. Keep failed requests diagnosable and retryable.
+   Store completed geometry in project_activities with source='offline'. Review
+   its source_activity_id bigint requirement and provide compatible stable IDs.
+   Add uniqueness rules for retries/repeated clicks, trail registry storage,
+   and explicit replacement links plus active/superseded activity state.
+   Preserve original request references after Strava replacement.
+   Configure public reads of completed activities and restricted writes with
+   row-level security and trusted server processing. Review/run SQL together.
+
+4. Implement trail extraction independently.
+   Snap endpoints to nearest trail segments, interpolating within segments.
+   Follow the connected trail between them, preserving intermediate geometry
+   and reversing direction when needed. Never invent connectors across gaps
+   or choose arbitrary branches. Calculate geodesic distance along the path.
+   Return submitted/snapped coordinates and the selected section.
+   Test example coordinates, reversed direction, same-segment points, off-trail
+   points, disconnected sections, and ambiguous intersections.
+
+5. Process immediately when Ken submits.
+   Validate authorization and parameters on the server. Record/claim request,
+   load versioned geometry from Supabase, extract section, calculate distance
+   and progress credit, then save completed activity. Public visitors only
+   read completed activities and never initiate processing or database writes.
+   Use stable identity and transactional completion to prevent duplicate
+   activities on concurrent clicks/retries. Preserve retryable failures.
+   Return JSON after commit: completed/already_processed, request/activity IDs,
+   trail, appliesTo, hike time, submitted/snapped endpoints, trail distance,
+   and credited distance. Report errors clearly. If execution limits require
+   background work, design worker/status lookup and return pending honestly.
+
+6. Add link landing page and JSON result.
+   Parse/preserve hike parameters and support the agreed Submit action,
+   then show formatted JSON and an optional link to the completed activity.
+   Accept pw in satellite links by River's decision, transfer it in the POST
+   body, and avoid echoing it in the visible result or saved metadata. Remove
+   it from browser history and use no-referrer behavior where practical.
+   Repeated requests return the existing outcome.
+   Viewing or previewing the original URL must not submit an activity.
+
+7. Integrate map and progress calculations.
+   Reuse Voyager blue/Far Point Trail green. Include active offline records in
+   map paths, activity lists/details, progress markers, and totals without
+   requiring Strava URLs. Use extracted trail distance as offline distance.
+   Voyager uses existing seasonal distance-made-good rules; Far Point Trail
+   follows its existing rule. Keep trail distance and progress credit distinct.
+   Recalculate affected later credits after backdated inserts/corrections so
+   progress totals do not depend on import order. Verify units and chronology.
+
+8. Reconcile later Strava imports.
+   Suggest candidates using owner, appliesTo, hike time with timezone/tolerance,
+   geometry overlap, endpoints, and distance. Name is supporting evidence only,
+   never a reliable identity key. Initially ask for explicit confirmation of
+   suggested replacements and allow manual selection when no match is found.
+   Offline activities remain valid indefinitely if no recording exists.
+   Support confirmed replacement of several offline reports by one recording.
+   For partial overlap, agree on splitting/preserving uncovered sections or
+   keeping the import pending reconciliation; do not discard whole offline
+   hikes automatically when Strava covers only part of them.
+   Atomically import/save Strava record, mark selected offline records
+   superseded, and store replacement links. Retain original geometry/history
+   for audit and undo. Exclude superseded records consistently from maps,
+   lists, overlap calculations, and totals. Recalculate affected seasonal
+   credits chronologically. Retries/reimports preserve replacement links.
+
+9. Provide correction/removal workflow.
+   Define coordinate/dateTime corrections, overlapping-report review, and
+   undoing replacements. Preserve audit history and recalculate affected
+   credits. Keep duplicate-request protection distinct from overlap detection.
+
+10. Validate together before release.
+    Check authorization, preview safety, duplicate/concurrent submissions,
+    retries, timezone handling, example geometry/distance, both appliesTo
+    values, public rendering, and unchanged Strava imports. Check unmatched
+    hikes, false match suggestions, replacements, partial overlaps, and
+    backdated recalculations. Run focused tests and project build. Review a
+    development example before production migrations and release.
+
+Recommendations to agree on during the relevant steps:
+ - Shared-password Submit action followed by JSON agreed; no writes on GET.
+ - Immediate processing using versioned trail geometry stored in Supabase.
+ - Retain processed requests for audit.
+ - Suggest Strava matches and confirm replacements rather than match by name.
+ - Define snapping tolerance, ambiguous-route behavior, dateTime as hike start,
+   and partial-replacement workflow.

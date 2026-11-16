@@ -1,2 +1,9 @@
 [functions.strava-callback]
 verify_jwt = false
+
+[functions.submit-offline-activity]
+# Custom shared-password validation occurs in the handler, not JWT middleware.
+verify_jwt = false
+
+[functions.offline-activity-content]
+verify_jwt = false
