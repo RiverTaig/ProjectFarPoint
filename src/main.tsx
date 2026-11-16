@@ -1,4 +1,12 @@
-import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import './offline/offlineLanding';
+import {
+  StrictMode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import type {
   CSSProperties,
   ChangeEvent,
@@ -10,6 +18,7 @@ import { createRoot } from 'react-dom/client';
 import '@arcgis/core/assets/esri/themes/dark/main.css';
 import Camera from '@arcgis/core/Camera.js';
 import Graphic from '@arcgis/core/Graphic.js';
+import GeoJSONLayer from '@arcgis/core/layers/GeoJSONLayer.js';
 import GraphicsLayer from '@arcgis/core/layers/GraphicsLayer.js';
 import Map from '@arcgis/core/Map.js';
 import SceneView from '@arcgis/core/views/SceneView.js';
@@ -18,6 +27,7 @@ import type LayerView from '@arcgis/core/views/layers/LayerView.js';
 import type { Session } from '@supabase/supabase-js';
 import { supabase } from './supabaseClient';
 import './styles.css';
+import OfflinePreview from './offline/OfflinePreview';
 
 type LatLon = {
   latitude: number;
@@ -211,26 +221,28 @@ type ArcgisWorldCitiesResponse = {
   };
 };
 
-const projectActivitySelectColumns =
+const projectActivityBaseSelectColumns =
   'id,name,sport_type,started_at,pfp_type,trail_name,city,state,province,country,continent,corrected_distance,distance_made_good,strava_type,strava_url,text_description,geometry_simplified_medium';
+const projectActivitySelectColumns = `${projectActivityBaseSelectColumns},progress_story`;
 const arcgisWorldGeocodeServiceUrl =
   'https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer';
 const arcgisWorldCitiesLayerUrl =
   'https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/World_Cities/FeatureServer/0';
 
 const voyagerStart: LatLon = {
-  latitude: -42.880468,
-  longitude: 171.454274,
+  latitude: -42.905573,
+  longitude: 171.625734,
 };
 
-const everestSummit: LatLon = {
-  latitude: 27.98785,
-  longitude: 86.925026,
+const voyagerWaypoint: LatLon = {
+  latitude: 36.5785,
+  longitude: -118.2923
+,
 };
 
-const everestAntipode: LatLon = {
-  latitude: -everestSummit.latitude,
-  longitude: normalizeLongitude(everestSummit.longitude + 180),
+const farPointTrailWaypoint: LatLon = {
+  latitude: -voyagerWaypoint.latitude,
+  longitude: normalizeLongitude(voyagerWaypoint.longitude + 180),
 };
 
 const calgary: LatLon = {
@@ -326,8 +338,7 @@ function splitPathAtAntimeridian(path: number[][]) {
     if (crossesAntimeridian) {
       const boundary = longitudeDelta > 0 ? 180 : -180;
       const oppositeBoundary = longitudeDelta > 0 ? -180 : 180;
-      const progress =
-        (boundary - previousUnwrappedLongitude) / longitudeDelta;
+      const progress = (boundary - previousUnwrappedLongitude) / longitudeDelta;
       const boundaryLatitude =
         previousLatitude + progress * (latitude - previousLatitude);
       const currentPath = paths[paths.length - 1];
@@ -336,7 +347,10 @@ function splitPathAtAntimeridian(path: number[][]) {
       paths.push([[oppositeBoundary, boundaryLatitude]]);
     }
 
-    paths[paths.length - 1].push([normalizeLongitude(unwrappedLongitude), latitude]);
+    paths[paths.length - 1].push([
+      normalizeLongitude(unwrappedLongitude),
+      latitude,
+    ]);
     previousLatitude = latitude;
     previousUnwrappedLongitude = unwrappedLongitude;
   }
@@ -382,11 +396,11 @@ function createAntipodalRoutePath(
 }
 
 function createVoyagerRoutePath() {
-  return createAntipodalRoutePath(voyagerStart, everestSummit);
+  return createAntipodalRoutePath(voyagerStart, voyagerWaypoint);
 }
 
 function createFarPointTrailPath() {
-  return createAntipodalRoutePath(voyagerStart, everestAntipode);
+  return createAntipodalRoutePath(voyagerStart, farPointTrailWaypoint);
 }
 
 function clampJourneyProgressKilometers(distanceKilometers: number) {
@@ -396,16 +410,20 @@ function clampJourneyProgressKilometers(distanceKilometers: number) {
 function createVoyagerProgressPath(distanceKilometers: number) {
   return createAntipodalRoutePath(
     voyagerStart,
-    everestSummit,
-    Math.PI * (clampJourneyProgressKilometers(distanceKilometers) / halfJourneyKilometers),
+    voyagerWaypoint,
+    Math.PI *
+      (clampJourneyProgressKilometers(distanceKilometers) /
+        halfJourneyKilometers),
   );
 }
 
 function createFarPointProgressPath(distanceKilometers: number) {
   return createAntipodalRoutePath(
-    voyagerAntipode,
-    everestAntipode,
-    Math.PI * (clampJourneyProgressKilometers(distanceKilometers) / halfJourneyKilometers),
+    voyagerStart,
+    farPointTrailWaypoint,
+    Math.PI *
+      (clampJourneyProgressKilometers(distanceKilometers) /
+        halfJourneyKilometers),
   );
 }
 
@@ -438,17 +456,26 @@ function getProgressPosition(path: ProgressPath, distanceKilometers: number) {
 
   if (path === 'Voyager') {
     return isPastFirstHalf
-      ? getGreatCirclePosition(voyagerAntipode, everestAntipode, segmentDistance)
-      : getGreatCirclePosition(voyagerStart, everestSummit, segmentDistance);
+      ? getGreatCirclePosition(
+          voyagerAntipode,
+          farPointTrailWaypoint,
+          segmentDistance,
+        )
+      : getGreatCirclePosition(voyagerStart, voyagerWaypoint, segmentDistance);
   }
 
   return isPastFirstHalf
-    ? getGreatCirclePosition(voyagerStart, everestSummit, segmentDistance)
-    : getGreatCirclePosition(voyagerAntipode, everestAntipode, segmentDistance);
+    ? getGreatCirclePosition(voyagerAntipode, voyagerWaypoint, segmentDistance)
+    : getGreatCirclePosition(
+        voyagerStart,
+        farPointTrailWaypoint,
+        segmentDistance,
+      );
 }
 
 function createActivityPaths(activity: ProjectActivity) {
-  const geometry = activity.geometry_simplified_medium ?? activity.geometry_geojson;
+  const geometry =
+    activity.geometry_simplified_medium ?? activity.geometry_geojson;
 
   if (!geometry?.coordinates?.length) {
     return [];
@@ -459,7 +486,18 @@ function createActivityPaths(activity: ProjectActivity) {
   );
 }
 
-function getActivityLineColor(activity: ProjectActivity): [number, number, number, number] {
+function isMissingProgressStoryColumnError(error: unknown) {
+  const queryError = error as { code?: string; message?: string } | null;
+
+  return (
+    queryError?.code === '42703' &&
+    Boolean(queryError.message?.includes('progress_story'))
+  );
+}
+
+function getActivityLineColor(
+  activity: ProjectActivity,
+): [number, number, number, number] {
   if (activity.pfp_type === 'Far Point Trail') {
     return [166, 224, 49, 0.96];
   }
@@ -467,7 +505,10 @@ function getActivityLineColor(activity: ProjectActivity): [number, number, numbe
   return [51, 198, 255, 0.96];
 }
 
-function createActivityLineSymbol(activity: ProjectActivity, isSelected = false) {
+function createActivityLineSymbol(
+  activity: ProjectActivity,
+  isSelected = false,
+) {
   return {
     type: 'simple-line',
     color: isSelected ? [255, 220, 70, 1] : getActivityLineColor(activity),
@@ -497,10 +538,16 @@ function getActivityStartTime(activity: ProjectActivity) {
 
 function createProgressPositions(activities: ProjectActivity[]) {
   const positions: ProgressPosition[] = [];
-  const activitiesByPath = new globalThis.Map<ProgressPath, ProjectActivity[]>();
+  const activitiesByPath = new globalThis.Map<
+    ProgressPath,
+    ProjectActivity[]
+  >();
 
   activities.forEach((activity) => {
-    if (activity.pfp_type !== 'Voyager' && activity.pfp_type !== 'Far Point Trail') {
+    if (
+      activity.pfp_type !== 'Voyager' &&
+      activity.pfp_type !== 'Far Point Trail'
+    ) {
       return;
     }
 
@@ -514,7 +561,8 @@ function createProgressPositions(activities: ProjectActivity[]) {
 
     pathActivities
       .sort((left, right) => {
-        const dateDifference = getActivityStartTime(left) - getActivityStartTime(right);
+        const dateDifference =
+          getActivityStartTime(left) - getActivityStartTime(right);
 
         if (dateDifference !== 0) {
           return dateDifference;
@@ -535,14 +583,21 @@ function createProgressPositions(activities: ProjectActivity[]) {
   return positions;
 }
 
-function createJourneyProgressSummary(activities: ProjectActivity[]): JourneyProgressSummary {
+function createJourneyProgressSummary(
+  activities: ProjectActivity[],
+): JourneyProgressSummary {
   return activities.reduce<JourneyProgressSummary>(
     (summary, activity) => {
-      if (activity.pfp_type !== 'Voyager' && activity.pfp_type !== 'Far Point Trail') {
+      if (
+        activity.pfp_type !== 'Voyager' &&
+        activity.pfp_type !== 'Far Point Trail'
+      ) {
         return summary;
       }
 
-      summary[activity.pfp_type] += getKilometerValue(activity.distance_made_good);
+      summary[activity.pfp_type] += getKilometerValue(
+        activity.distance_made_good,
+      );
 
       return summary;
     },
@@ -557,10 +612,11 @@ function useAnimatedJourneyProgress(
   targetProgress: JourneyProgressSummary,
   isEnabled: boolean,
 ) {
-  const [animatedProgress, setAnimatedProgress] = useState<JourneyProgressSummary>({
-    Voyager: 0,
-    'Far Point Trail': 0,
-  });
+  const [animatedProgress, setAnimatedProgress] =
+    useState<JourneyProgressSummary>({
+      Voyager: 0,
+      'Far Point Trail': 0,
+    });
   const animatedProgressRef = useRef(animatedProgress);
 
   useEffect(() => {
@@ -612,7 +668,8 @@ function useAnimatedJourneyProgress(
 
           isComplete = false;
           next[path] =
-            currentDistance + Math.sign(remainingDistance) * maximumStepKilometers;
+            currentDistance +
+            Math.sign(remainingDistance) * maximumStepKilometers;
 
           return next;
         },
@@ -640,13 +697,12 @@ function useAnimatedJourneyProgress(
   return animatedProgress;
 }
 
-function createProgressMarkerSymbol(activity: ProjectActivity, isSelected = false) {
+function createProgressMarkerSymbol(
+  activity: ProjectActivity,
+  isSelected = false,
+) {
   const isFarPoint = activity.pfp_type === 'Far Point Trail';
-  const fillColor = isSelected
-    ? '#ffdc46'
-    : isFarPoint
-      ? '#a6e031'
-      : '#33c6ff';
+  const fillColor = isSelected ? '#ffdc46' : isFarPoint ? '#a6e031' : '#33c6ff';
   const haloColor = isFarPoint ? '#24340d' : '#082b3d';
   const size = isSelected ? 30 : 24;
   const pinSvg = `
@@ -669,9 +725,10 @@ function createProgressLabelSymbol(activity: ProjectActivity) {
   return {
     type: 'text',
     text: activity.trail_name || activity.name,
-    color: activity.pfp_type === 'Far Point Trail'
-      ? [219, 255, 127, 1]
-      : [155, 228, 255, 1],
+    color:
+      activity.pfp_type === 'Far Point Trail'
+        ? [219, 255, 127, 1]
+        : [155, 228, 255, 1],
     haloColor: [2, 6, 17, 0.96],
     haloSize: 1.4,
     font: {
@@ -745,6 +802,50 @@ function getViewWidthKilometers(view: SceneView) {
   );
 }
 
+function getNiceScaleBarKilometers(targetKilometers: number) {
+  if (!Number.isFinite(targetKilometers) || targetKilometers <= 0) {
+    return null;
+  }
+
+  const magnitude = 10 ** Math.floor(Math.log10(targetKilometers));
+  const normalizedTarget = targetKilometers / magnitude;
+  const niceMultiplier =
+    normalizedTarget >= 5 ? 5 : normalizedTarget >= 2 ? 2 : 1;
+
+  return niceMultiplier * magnitude;
+}
+
+function createScaleBarState(view: SceneView) {
+  const widthKilometers = getViewWidthKilometers(view);
+
+  if (!Number.isFinite(widthKilometers) || !view.width) {
+    return null;
+  }
+
+  const targetPixels = Math.min(170, Math.max(86, view.width * 0.22));
+  const kilometersPerPixel = widthKilometers / view.width;
+  const scaleKilometers = getNiceScaleBarKilometers(
+    targetPixels * kilometersPerPixel,
+  );
+
+  if (!scaleKilometers) {
+    return null;
+  }
+
+  const widthPixels = Math.max(48, scaleKilometers / kilometersPerPixel);
+  const label =
+    scaleKilometers >= 1
+      ? `${scaleKilometers.toLocaleString(undefined, {
+          maximumFractionDigits: scaleKilometers >= 10 ? 0 : 1,
+        })} km`
+      : `${Math.round(scaleKilometers * 1000).toLocaleString()} m`;
+
+  return {
+    label,
+    widthPixels,
+  };
+}
+
 function formatDateTimeLocalInput(value?: string | null) {
   if (!value) {
     return '';
@@ -756,7 +857,9 @@ function formatDateTimeLocalInput(value?: string | null) {
     return '';
   }
 
-  const offsetDate = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  const offsetDate = new Date(
+    date.getTime() - date.getTimezoneOffset() * 60_000,
+  );
 
   return offsetDate.toISOString().slice(0, 16);
 }
@@ -777,7 +880,9 @@ function createActivityMetadata(item?: StravaImportItem): ActivityMetadata {
   const route = !isActivity ? (item as StravaRoute | undefined) : null;
 
   return {
-    startedAt: formatDateTimeLocalInput(activity?.start_date ?? route?.created_at),
+    startedAt: formatDateTimeLocalInput(
+      activity?.start_date ?? route?.created_at,
+    ),
     trailName: '',
     pfpType: 'Voyager',
     textDescription: '',
@@ -791,7 +896,10 @@ function prepareActivityMetadata(metadata: ActivityMetadata): ActivityMetadata {
   };
 }
 
-async function getFunctionErrorMessage(error: unknown, fallbackMessage: string) {
+async function getFunctionErrorMessage(
+  error: unknown,
+  fallbackMessage: string,
+) {
   const context =
     typeof error === 'object' && error !== null && 'context' in error
       ? (error as { context?: Response }).context
@@ -818,7 +926,8 @@ async function getFunctionErrorMessage(error: unknown, fallbackMessage: string) 
     }
   }
 
-  return error instanceof Error && error.message !== 'Edge Function returned a non-2xx status code'
+  return error instanceof Error &&
+    error.message !== 'Edge Function returned a non-2xx status code'
     ? error.message
     : fallbackMessage;
 }
@@ -870,7 +979,11 @@ function formatKilometers(value: number | string | null) {
   })} km`;
 }
 
-function formatCoordinate(value: number, directionA: string, directionB: string) {
+function formatCoordinate(
+  value: number,
+  directionA: string,
+  directionB: string,
+) {
   const direction = value >= 0 ? directionA : directionB;
 
   return `${Math.abs(value).toFixed(5)}° ${direction}`;
@@ -899,6 +1012,26 @@ function getGreatCircleDistanceKilometers(from: LatLon, to: LatLon) {
   return Math.acos(clampedDot) * earthRadiusKilometers;
 }
 
+function getBearingDegrees(from: LatLon, to: LatLon) {
+  const fromLatitude = degreesToRadians(from.latitude);
+  const toLatitude = degreesToRadians(to.latitude);
+  const longitudeDelta = degreesToRadians(to.longitude - from.longitude);
+  const y = Math.sin(longitudeDelta) * Math.cos(toLatitude);
+  const x =
+    Math.cos(fromLatitude) * Math.sin(toLatitude) -
+    Math.sin(fromLatitude) * Math.cos(toLatitude) * Math.cos(longitudeDelta);
+
+  return (radiansToDegrees(Math.atan2(y, x)) + 360) % 360;
+}
+
+function getCompassDirection(from: LatLon, to: LatLon) {
+  const directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+  const index =
+    Math.round(getBearingDegrees(from, to) / 45) % directions.length;
+
+  return directions[index];
+}
+
 function cleanCountryName(value: string) {
   return value
     .replace(/^Kingdom of\s+/i, '')
@@ -915,16 +1048,24 @@ function formatNearbyPlaceLabel(
   city: string,
   country: string,
 ) {
-  const distanceKilometers = getGreatCircleDistanceKilometers(searchPosition, placePosition);
+  const distanceKilometers = getGreatCircleDistanceKilometers(
+    searchPosition,
+    placePosition,
+  );
   const distanceLabel = formatKilometers(distanceKilometers) ?? '0 km';
+  const direction = getCompassDirection(placePosition, searchPosition);
 
-  return `${distanceLabel} from ${city}, ${cleanCountryName(country)}`;
+  return `${distanceLabel} ${direction} of ${city}, ${cleanCountryName(country)}`;
 }
 
-function getCandidatePlace(position: LatLon, candidate: ArcgisAddressCandidate) {
+function getCandidatePlace(
+  position: LatLon,
+  candidate: ArcgisAddressCandidate,
+) {
   const attributes = candidate.attributes;
   const country = attributes?.CntryName || attributes?.CountryCode;
-  const placeName = attributes?.PlaceName || attributes?.City || candidate.address;
+  const placeName =
+    attributes?.PlaceName || attributes?.City || candidate.address;
   const longitude = candidate.location?.x;
   const latitude = candidate.location?.y;
 
@@ -946,7 +1087,10 @@ function getCandidatePlace(position: LatLon, candidate: ArcgisAddressCandidate) 
   };
 
   return {
-    distanceKilometers: getGreatCircleDistanceKilometers(position, placePosition),
+    distanceKilometers: getGreatCircleDistanceKilometers(
+      position,
+      placePosition,
+    ),
     label: formatNearbyPlaceLabel(position, placePosition, placeName, country),
   };
 }
@@ -974,7 +1118,10 @@ function getWorldCityPlace(position: LatLon, feature: ArcgisWorldCityFeature) {
   };
 
   return {
-    distanceKilometers: getGreatCircleDistanceKilometers(position, placePosition),
+    distanceKilometers: getGreatCircleDistanceKilometers(
+      position,
+      placePosition,
+    ),
     label: formatNearbyPlaceLabel(position, placePosition, city, country),
   };
 }
@@ -1015,9 +1162,18 @@ async function queryWorldCityCandidates(
     Math.abs(latitudeCosine) < 0.08
       ? 180
       : Math.min(180, radiusKilometers / (111.32 * Math.abs(latitudeCosine)));
-  const minimumLatitude = Math.max(-90, position.latitude - latitudeRadiusDegrees);
-  const maximumLatitude = Math.min(90, position.latitude + latitudeRadiusDegrees);
-  const longitudeRanges = getLongitudeRanges(position.longitude, longitudeRadiusDegrees);
+  const minimumLatitude = Math.max(
+    -90,
+    position.latitude - latitudeRadiusDegrees,
+  );
+  const maximumLatitude = Math.min(
+    90,
+    position.latitude + latitudeRadiusDegrees,
+  );
+  const longitudeRanges = getLongitudeRanges(
+    position.longitude,
+    longitudeRadiusDegrees,
+  );
   const features = await Promise.all(
     longitudeRanges.map(async ([minimumLongitude, maximumLongitude]) => {
       const params = new URLSearchParams({
@@ -1111,16 +1267,16 @@ async function lookupNearestWorldCity(position: LatLon, signal: AbortSignal) {
   ];
 
   for (const radiusKilometers of searchRadiiKilometers) {
-    const candidatePlaces = (await queryWorldCityCandidates(
-      position,
-      radiusKilometers,
-      signal,
-    ))
+    const candidatePlaces = (
+      await queryWorldCityCandidates(position, radiusKilometers, signal)
+    )
       .map((feature) => getWorldCityPlace(position, feature))
       .filter((place): place is { distanceKilometers: number; label: string } =>
         Boolean(place),
       )
-      .sort((left, right) => left.distanceKilometers - right.distanceKilometers);
+      .sort(
+        (left, right) => left.distanceKilometers - right.distanceKilometers,
+      );
 
     if (candidatePlaces.length) {
       return candidatePlaces[0].label;
@@ -1154,7 +1310,11 @@ async function reverseLookupNearbyPlace(position: LatLon, signal: AbortSignal) {
 
   const address = data.address;
   const location = data.location;
-  const city = address?.City || address?.Subregion || address?.Region || address?.Match_addr;
+  const city =
+    address?.City ||
+    address?.Subregion ||
+    address?.Region ||
+    address?.Match_addr;
   const country = address?.CntryName || address?.CountryCode;
   const longitude = location?.x;
   const latitude = location?.y;
@@ -1281,7 +1441,8 @@ function getYouTubeEmbedUrl(rawUrl: string) {
       `https://www.youtube-nocookie.com/embed/${encodeURIComponent(videoId)}`,
     );
     const playlistId = parsedUrl.searchParams.get('list');
-    const startTime = parsedUrl.searchParams.get('t') ?? parsedUrl.searchParams.get('start');
+    const startTime =
+      parsedUrl.searchParams.get('t') ?? parsedUrl.searchParams.get('start');
 
     if (playlistId) {
       embedUrl.searchParams.set('list', playlistId);
@@ -1428,8 +1589,12 @@ function GlobeView({
 }: GlobeViewProps) {
   const sceneNode = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<SceneView | null>(null);
-  const importedActivityGraphics = useRef(new globalThis.Map<string, Graphic>());
-  const progressActivityGraphics = useRef(new globalThis.Map<string, Graphic>());
+  const importedActivityGraphics = useRef(
+    new globalThis.Map<string, Graphic>(),
+  );
+  const progressActivityGraphics = useRef(
+    new globalThis.Map<string, Graphic>(),
+  );
   const journeyProgressRef = useRef(journeyProgress);
   const voyagerProgressGraphic = useRef<Graphic | null>(null);
   const farPointProgressGraphic = useRef<Graphic | null>(null);
@@ -1437,7 +1602,12 @@ function GlobeView({
   const selectedActivityGraphic = useRef<Graphic | null>(null);
   const selectedProgressGraphic = useRef<Graphic | null>(null);
   const [isGlobeReady, setIsGlobeReady] = useState(false);
-  const [isGeneratingTestActivity, setIsGeneratingTestActivity] = useState(false);
+  const [scaleBar, setScaleBar] = useState<{
+    label: string;
+    widthPixels: number;
+  } | null>(null);
+  const [isGeneratingTestActivity, setIsGeneratingTestActivity] =
+    useState(false);
   const [testGeneratorStatus, setTestGeneratorStatus] = useState('');
   const [testGeneratorError, setTestGeneratorError] = useState('');
   const loadingLogoUrl = `${import.meta.env.BASE_URL}ProjectFarPointLoader.png`;
@@ -1456,7 +1626,8 @@ function GlobeView({
       return;
     }
 
-    const nextGraphic = importedActivityGraphics.current.get(selectedActivityId);
+    const nextGraphic =
+      importedActivityGraphics.current.get(selectedActivityId);
 
     if (nextGraphic) {
       nextGraphic.symbol = createActivityLineSymbol(
@@ -1481,7 +1652,8 @@ function GlobeView({
       return;
     }
 
-    const nextProgressGraphic = progressActivityGraphics.current.get(selectedActivityId);
+    const nextProgressGraphic =
+      progressActivityGraphics.current.get(selectedActivityId);
 
     if (nextProgressGraphic) {
       nextProgressGraphic.symbol = createProgressMarkerSymbol(
@@ -1516,12 +1688,14 @@ function GlobeView({
       }
 
       focusedProgressLayerRef.current?.removeAll();
-      view.goTo(extent.expand(1.35), {
-        animate: true,
-        duration: 900,
-      }).catch(() => {
-        // The view may be interrupted by a user pan/zoom.
-      });
+      view
+        .goTo(extent.expand(1.35), {
+          animate: true,
+          duration: 900,
+        })
+        .catch(() => {
+          // The view may be interrupted by a user pan/zoom.
+        });
     }
 
     focusActivity();
@@ -1581,19 +1755,21 @@ function GlobeView({
           },
         }),
       );
-      view.goTo(
-        {
-          target: graphic.geometry,
-          scale: 18000000,
-          tilt: 0,
-        },
-        {
-          animate: true,
-          duration: 1200,
-        },
-      ).catch(() => {
-        // The view may be interrupted by a user pan/zoom.
-      });
+      view
+        .goTo(
+          {
+            target: graphic.geometry,
+            scale: 18000000,
+            tilt: 0,
+          },
+          {
+            animate: true,
+            duration: 1200,
+          },
+        )
+        .catch(() => {
+          // The view may be interrupted by a user pan/zoom.
+        });
     }
 
     focusProgressPosition();
@@ -1648,6 +1824,24 @@ function GlobeView({
       basemap: 'hybrid',
       ground: 'world-elevation',
     });
+    const teAraroaTrailLayer = new GeoJSONLayer({
+      title: 'Te Araroa Trail 2026–27',
+      url: `${import.meta.env.BASE_URL}TeAraroaTrail_2026_27.geojson`,
+      copyright: 'Te Araroa Trust, 2026 — Creative Commons 4.0 New Zealand',
+      popupEnabled: false,
+      elevationInfo: {
+        mode: 'on-the-ground',
+      },
+      renderer: {
+        type: 'simple',
+        symbol: {
+          type: 'simple-line',
+          color: [220, 220, 220, 1],
+          width: 3,
+        },
+      },
+    });
+    map.add(teAraroaTrailLayer);
     const voyagerRouteLayer = new GraphicsLayer({
       title: 'Project Far Point routes',
       elevationInfo: {
@@ -1685,14 +1879,14 @@ function GlobeView({
       },
       symbol: {
         type: 'simple-line',
-        color: [76, 143, 174, 0.7],
+        color: [51, 198, 255, 0.4],
         width: guideRouteWidth,
       },
       attributes: {
         name: 'Voyager',
         start: `${voyagerStart.latitude}, ${voyagerStart.longitude}`,
         end: `${voyagerAntipode.latitude}, ${voyagerAntipode.longitude}`,
-        via: `${everestSummit.latitude}, ${everestSummit.longitude}`,
+        via: `${voyagerWaypoint.latitude}, ${voyagerWaypoint.longitude}`,
       },
     });
     const farPointTrail = new Graphic({
@@ -1705,14 +1899,14 @@ function GlobeView({
       },
       symbol: {
         type: 'simple-line',
-        color: [112, 130, 84, 0.62],
+        color: [166, 224, 49, 0.4],
         width: guideRouteWidth,
       },
       attributes: {
         name: 'Far Point Trail',
         start: `${voyagerStart.latitude}, ${voyagerStart.longitude}`,
         end: `${voyagerAntipode.latitude}, ${voyagerAntipode.longitude}`,
-        via: `${everestAntipode.latitude}, ${everestAntipode.longitude}`,
+        via: `${farPointTrailWaypoint.latitude}, ${farPointTrailWaypoint.longitude}`,
       },
     });
     const currentJourneyProgress = journeyProgressRef.current;
@@ -1737,7 +1931,9 @@ function GlobeView({
     const farPointProgress = new Graphic({
       geometry: {
         type: 'polyline',
-        paths: createFarPointProgressPath(currentJourneyProgress['Far Point Trail']),
+        paths: createFarPointProgressPath(
+          currentJourneyProgress['Far Point Trail'],
+        ),
         spatialReference: {
           wkid: 4326,
         },
@@ -1749,7 +1945,8 @@ function GlobeView({
       },
       attributes: {
         name: 'Far Point Trail progress',
-        distance: formatKilometers(currentJourneyProgress['Far Point Trail']) ?? '0 km',
+        distance:
+          formatKilometers(currentJourneyProgress['Far Point Trail']) ?? '0 km',
       },
     });
     voyagerProgressGraphic.current = voyagerProgress;
@@ -1788,7 +1985,7 @@ function GlobeView({
       },
       symbol: {
         type: 'text',
-        text: 'St. James Cathedral',
+        text: 'Camino De Santiago',
         color: [255, 253, 247, 1],
         haloColor: [2, 6, 17, 0.92],
         haloSize: 1.5,
@@ -1800,7 +1997,33 @@ function GlobeView({
         yoffset: 18,
       },
       attributes: {
-        name: 'St. James Cathedral label',
+        name: 'Camino De Santiago label',
+      },
+    });
+    const teAraroaLabel = new Graphic({
+      geometry: {
+        type: 'point',
+        longitude: voyagerStart.longitude,
+        latitude: voyagerStart.latitude,
+        spatialReference: {
+          wkid: 4326,
+        },
+      },
+      symbol: {
+        type: 'text',
+        text: 'Te Araroa Trail',
+        color: [255, 253, 247, 1],
+        haloColor: [2, 6, 17, 0.92],
+        haloSize: 1.5,
+        font: {
+          family: 'Inter, Arial, sans-serif',
+          size: 12,
+          weight: 'bold',
+        },
+        yoffset: 18,
+      },
+      attributes: {
+        name: 'Te Araroa Trail label',
       },
     });
     const calgaryMarker = new Graphic({
@@ -1859,6 +2082,7 @@ function GlobeView({
     voyagerRouteLayer.add(farPointProgress);
     voyagerRouteLayer.add(cathedralMarker);
     voyagerRouteLayer.add(cathedralLabel);
+    voyagerRouteLayer.add(teAraroaLabel);
     voyagerRouteLayer.add(calgaryMarker);
     voyagerRouteLayer.add(calgaryLabel);
     map.add(voyagerRouteLayer);
@@ -1928,6 +2152,7 @@ function GlobeView({
         widthKilometers <= progressMarkersVisibleWidthKilometers;
       progressLabelLayer.visible =
         widthKilometers <= progressLabelsVisibleWidthKilometers;
+      setScaleBar(createScaleBarState(view));
     }
 
     function addProjectActivityGraphic(projectActivity: ProjectActivity) {
@@ -1972,28 +2197,53 @@ function GlobeView({
     }
 
     if (supabase) {
-      supabase
-        .from('project_activities')
-        .select(projectActivitySelectColumns)
-        .or('geometry_simplified_medium.not.is.null,geometry_geojson.not.is.null')
-        .then(({ data, error }) => {
-          if (isDestroyed || error || !data?.length) {
-            return;
-          }
+      async function loadProjectActivityGraphics() {
+        if (!supabase) {
+          return;
+        }
 
-          importedActivitiesLayer = new GraphicsLayer({
-            title: 'Imported activities',
-            elevationInfo: {
-              mode: 'on-the-ground',
-            },
-          });
+        const projectActivityResult = await supabase
+          .from('project_activities')
+          .select(projectActivitySelectColumns)
+          .or(
+            'geometry_simplified_medium.not.is.null,geometry_geojson.not.is.null',
+          );
+        let data = projectActivityResult.data as ProjectActivity[] | null;
+        let error: unknown = projectActivityResult.error;
 
-          data.forEach((activity) => addProjectActivityGraphic(activity as ProjectActivity));
+        if (isMissingProgressStoryColumnError(error)) {
+          const fallbackResult = await supabase
+            .from('project_activities')
+            .select(projectActivityBaseSelectColumns)
+            .or(
+              'geometry_simplified_medium.not.is.null,geometry_geojson.not.is.null',
+            );
 
-          map.add(importedActivitiesLayer);
-          rebuildProgressGraphics();
-          updateProgressLayerVisibility();
+          data = fallbackResult.data as ProjectActivity[] | null;
+          error = fallbackResult.error;
+        }
+
+        if (isDestroyed || error || !data?.length) {
+          return;
+        }
+
+        importedActivitiesLayer = new GraphicsLayer({
+          title: 'Imported activities',
+          elevationInfo: {
+            mode: 'on-the-ground',
+          },
         });
+
+        data.forEach((activity) =>
+          addProjectActivityGraphic(activity as ProjectActivity),
+        );
+
+        map.add(importedActivitiesLayer);
+        rebuildProgressGraphics();
+        updateProgressLayerVisibility();
+      }
+
+      loadProjectActivityGraphics();
     }
 
     const view = new SceneView({
@@ -2023,7 +2273,10 @@ function GlobeView({
     });
     viewRef.current = view;
     setBasemapLabelsVisible(map, true);
-    const progressVisibilityHandle = view.watch('extent', updateProgressLayerVisibility);
+    const progressVisibilityHandle = view.watch(
+      'extent',
+      updateProgressLayerVisibility,
+    );
     const imageryLayerHandles: ResourceHandle[] = [];
     let openingAnimationTimeout: number | null = null;
     let initialImageryStableTimeout: number | null = null;
@@ -2120,7 +2373,10 @@ function GlobeView({
       );
     });
     const clickHandle = view.on('click', async (event) => {
-      if (!importedActivitiesLayer && progressMarkerLayer.graphics.length === 0) {
+      if (
+        !importedActivitiesLayer &&
+        progressMarkerLayer.graphics.length === 0
+      ) {
         return;
       }
 
@@ -2152,7 +2408,10 @@ function GlobeView({
         focusedProgressLayer.removeAll();
         const previousProgressGraphic = selectedProgressGraphic.current;
 
-        if (previousProgressGraphic && previousProgressGraphic !== progressGraphic) {
+        if (
+          previousProgressGraphic &&
+          previousProgressGraphic !== progressGraphic
+        ) {
           previousProgressGraphic.symbol = createProgressMarkerSymbol(
             previousProgressGraphic.attributes.activity as ProjectActivity,
           );
@@ -2164,19 +2423,21 @@ function GlobeView({
         );
         selectedProgressGraphic.current = progressGraphic;
         onProgressActivitySelect(progressActivity);
-        view.goTo(
-          {
-            target: progressGeometry,
-            scale: 140000,
-            tilt: 0,
-          },
-          {
-            animate: true,
-            duration: 900,
-          },
-        ).catch(() => {
-          // The view may be interrupted by a user pan/zoom.
-        });
+        view
+          .goTo(
+            {
+              target: progressGeometry,
+              scale: 140000,
+              tilt: 0,
+            },
+            {
+              animate: true,
+              duration: 900,
+            },
+          )
+          .catch(() => {
+            // The view may be interrupted by a user pan/zoom.
+          });
         return;
       }
 
@@ -2238,16 +2499,22 @@ function GlobeView({
           throw new Error('Could not read the current map center.');
         }
 
-        const { data, error } = await supabase.functions.invoke('generate-test-activity', {
-          body: {
-            latitude,
-            longitude,
+        const { data, error } = await supabase.functions.invoke(
+          'generate-test-activity',
+          {
+            body: {
+              latitude,
+              longitude,
+            },
           },
-        });
+        );
 
         if (error) {
           throw new Error(
-            await getFunctionErrorMessage(error, 'Could not generate a test activity.'),
+            await getFunctionErrorMessage(
+              error,
+              'Could not generate a test activity.',
+            ),
           );
         }
 
@@ -2264,7 +2531,8 @@ function GlobeView({
         if (graphic) {
           if (selectedActivityGraphic.current) {
             selectedActivityGraphic.current.symbol = createActivityLineSymbol(
-              selectedActivityGraphic.current.attributes.activity as ProjectActivity,
+              selectedActivityGraphic.current.attributes
+                .activity as ProjectActivity,
             );
           }
 
@@ -2276,7 +2544,9 @@ function GlobeView({
         setTestGeneratorStatus(`Generated ${projectActivity.name}.`);
       } catch (error) {
         setTestGeneratorError(
-          error instanceof Error ? error.message : 'Could not generate a test activity.',
+          error instanceof Error
+            ? error.message
+            : 'Could not generate a test activity.',
         );
       } finally {
         testActivityButton.disabled = false;
@@ -2319,18 +2589,33 @@ function GlobeView({
   }, [onActivitySelect, onGlobeReadyChange, onProgressActivitySelect, session]);
 
   return (
-    <div className={`globe-view-shell${isGlobeReady ? ' globe-view-ready' : ' globe-view-loading'}`}>
-      <div className="globe-view" ref={sceneNode} aria-label="3D globe" />
+    <div
+      className={`globe-view-shell${isGlobeReady ? ' globe-view-ready' : ' globe-view-loading'}`}
+    >
+      <div className='globe-view' ref={sceneNode} aria-label='3D globe' />
+      {scaleBar && (
+        <div
+          className='globe-scale-bar'
+          aria-label={`Map scale ${scaleBar.label}`}
+        >
+          <span
+            className='globe-scale-bar-line'
+            style={{ width: `${scaleBar.widthPixels}px` }}
+            aria-hidden='true'
+          />
+          <span>{scaleBar.label}</span>
+        </div>
+      )}
       {!isGlobeReady && (
-        <div className="globe-loading-scrim" aria-live="polite">
+        <div className='globe-loading-scrim' aria-live='polite'>
           <img
-            className="globe-loading-logo"
+            className='globe-loading-logo'
             src={loadingLogoUrl}
-            alt="Project Far Point"
+            alt='Project Far Point'
           />
           <p>
             <span>Loading globe imagery</span>
-            <span className="globe-loading-dots" aria-hidden="true">
+            <span className='globe-loading-dots' aria-hidden='true'>
               <span />
               <span />
               <span />
@@ -2339,10 +2624,12 @@ function GlobeView({
         </div>
       )}
       {isProjectOwner(session) && (
-        <div className="map-test-activity-status" aria-live="polite">
+        <div className='map-test-activity-status' aria-live='polite'>
           {isGeneratingTestActivity && <p>Generating test activity...</p>}
           {testGeneratorStatus && <p>{testGeneratorStatus}</p>}
-          {testGeneratorError && <p className="map-test-activity-error">{testGeneratorError}</p>}
+          {testGeneratorError && (
+            <p className='map-test-activity-error'>{testGeneratorError}</p>
+          )}
         </div>
       )}
     </div>
@@ -2354,7 +2641,7 @@ type AuthMode = 'signIn' | 'signUp' | 'reset' | 'updatePassword';
 const ownerEmail = 'rivermadsen23@gmail.com';
 
 function getAuthRedirectUrl() {
-  return `${window.location.origin}${window.location.pathname}?adminPage`;
+  return `${window.location.origin}${window.location.pathname}`;
 }
 
 function isProjectOwner(session: Session | null) {
@@ -2424,7 +2711,7 @@ function AuthPanel({ session }: AuthPanelProps) {
 
   if (!supabase) {
     return (
-      <div className="auth-panel auth-panel-muted">
+      <div className='auth-panel auth-panel-muted'>
         Add Supabase environment variables to enable login.
       </div>
     );
@@ -2540,30 +2827,30 @@ function AuthPanel({ session }: AuthPanelProps) {
   }[mode];
 
   return (
-    <div className="auth-panel">
-      <div className="auth-row">
+    <div className='auth-panel'>
+      <div className='auth-row'>
         <button
-          className="auth-toggle"
-          type="button"
+          className='auth-toggle'
+          type='button'
           onClick={() => setIsOpen((wasOpen) => !wasOpen)}
         >
           {session ? session.user.email : 'Log in'}
         </button>
         {isProjectOwner(session) && (
-          <a className="owner-action-link" href="?adminPage=addActivity">
+          <a className='owner-action-link' href='?adminPage=addActivity'>
             Add Activity to Project Far Point
           </a>
         )}
       </div>
 
       {isOpen && (
-        <div className="auth-popover">
+        <div className='auth-popover'>
           {session && mode !== 'updatePassword' ? (
             <>
-              <p className="auth-status">Signed in as {session.user.email}</p>
+              <p className='auth-status'>Signed in as {session.user.email}</p>
               <button
-                className="auth-submit"
-                type="button"
+                className='auth-submit'
+                type='button'
                 onClick={handleSignOut}
                 disabled={isSubmitting}
               >
@@ -2571,15 +2858,15 @@ function AuthPanel({ session }: AuthPanelProps) {
               </button>
             </>
           ) : (
-            <form className="auth-form" onSubmit={handleSubmit}>
+            <form className='auth-form' onSubmit={handleSubmit}>
               <label>
                 Email
                 <input
-                  type="email"
+                  type='email'
                   value={email}
                   onChange={(event) => setEmail(event.target.value)}
                   required={mode !== 'updatePassword'}
-                  autoComplete="email"
+                  autoComplete='email'
                 />
               </label>
 
@@ -2587,7 +2874,7 @@ function AuthPanel({ session }: AuthPanelProps) {
                 <label>
                   Password
                   <input
-                    type="password"
+                    type='password'
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}
                     required
@@ -2600,26 +2887,26 @@ function AuthPanel({ session }: AuthPanelProps) {
               )}
 
               <button
-                className="auth-submit"
-                type="submit"
+                className='auth-submit'
+                type='submit'
                 disabled={isSubmitting}
               >
                 {isSubmitting ? 'Working...' : buttonText}
               </button>
 
-              <div className="auth-actions">
+              <div className='auth-actions'>
                 {mode !== 'signIn' && (
-                  <button type="button" onClick={() => setMode('signIn')}>
+                  <button type='button' onClick={() => setMode('signIn')}>
                     Sign in
                   </button>
                 )}
                 {mode !== 'signUp' && mode !== 'updatePassword' && (
-                  <button type="button" onClick={() => setMode('signUp')}>
+                  <button type='button' onClick={() => setMode('signUp')}>
                     Create account
                   </button>
                 )}
                 {mode !== 'reset' && mode !== 'updatePassword' && (
-                  <button type="button" onClick={() => setMode('reset')}>
+                  <button type='button' onClick={() => setMode('reset')}>
                     Forgot password
                   </button>
                 )}
@@ -2627,8 +2914,8 @@ function AuthPanel({ session }: AuthPanelProps) {
             </form>
           )}
 
-          {status && <p className="auth-status">{status}</p>}
-          {error && <p className="auth-error">{error}</p>}
+          {status && <p className='auth-status'>{status}</p>}
+          {error && <p className='auth-error'>{error}</p>}
         </div>
       )}
     </div>
@@ -2646,13 +2933,17 @@ function AddActivityPage({ session }: AddActivityPageProps) {
   const [importKind, setImportKind] = useState<StravaImportKind>('activity');
   const [activities, setActivities] = useState<StravaActivity[]>([]);
   const [routes, setRoutes] = useState<StravaRoute[]>([]);
-  const [selectedActivityId, setSelectedActivityId] = useState<number | null>(null);
+  const [selectedActivityId, setSelectedActivityId] = useState<number | null>(
+    null,
+  );
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
   const [manualRouteReference, setManualRouteReference] = useState('');
   const [activityMetadata, setActivityMetadata] = useState<ActivityMetadata>(
     createActivityMetadata(),
   );
-  const [activityImages, setActivityImages] = useState<ActivityImageInput[]>([]);
+  const [activityImages, setActivityImages] = useState<ActivityImageInput[]>(
+    [],
+  );
   const [isLoadingItems, setIsLoadingItems] = useState(false);
   const [isImportingActivity, setIsImportingActivity] = useState(false);
   const searchParams = new URLSearchParams(window.location.search);
@@ -2661,9 +2952,11 @@ function AddActivityPage({ session }: AddActivityPageProps) {
     (activity) => activity.id === selectedActivityId,
   );
   const selectedRoute = routes.find((route) => route.id === selectedRouteId);
-  const selectedImportItem = importKind === 'activity' ? selectedActivity : selectedRoute;
+  const selectedImportItem =
+    importKind === 'activity' ? selectedActivity : selectedRoute;
   const importKindLabel = importKind === 'activity' ? 'activity' : 'route';
-  const importKindLabelPlural = importKind === 'activity' ? 'activities' : 'routes';
+  const importKindLabelPlural =
+    importKind === 'activity' ? 'activities' : 'routes';
   const manualRouteId = extractStravaRouteId(manualRouteReference);
   const routeIdToImport = manualRouteId || selectedRouteId;
   const canShowImportForm =
@@ -2676,7 +2969,9 @@ function AddActivityPage({ session }: AddActivityPageProps) {
   }, [selectedImportItem]);
 
   function handleMetadataChange(
-    event: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>,
+    event: ChangeEvent<
+      HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
+    >,
   ) {
     const { name, value } = event.target;
 
@@ -2695,7 +2990,9 @@ function AddActivityPage({ session }: AddActivityPageProps) {
 
   function handleAddImageInput() {
     setActivityImages((currentImages) =>
-      currentImages.length >= 10 ? currentImages : [...currentImages, createActivityImageInput()],
+      currentImages.length >= 10
+        ? currentImages
+        : [...currentImages, createActivityImageInput()],
     );
   }
 
@@ -2748,7 +3045,9 @@ function AddActivityPage({ session }: AddActivityPageProps) {
       const normalizedName = name.toLowerCase();
 
       if (names.has(normalizedName)) {
-        throw new Error(`Image name "${name}" is already used for this activity.`);
+        throw new Error(
+          `Image name "${name}" is already used for this activity.`,
+        );
       }
 
       names.add(normalizedName);
@@ -2756,7 +3055,9 @@ function AddActivityPage({ session }: AddActivityPageProps) {
   }
 
   async function uploadActivityImages(activityId: string) {
-    const readyImages = activityImages.filter((image) => image.name.trim() && image.file);
+    const readyImages = activityImages.filter(
+      (image) => image.name.trim() && image.file,
+    );
 
     if (readyImages.length === 0) {
       return 0;
@@ -2785,7 +3086,9 @@ function AddActivityPage({ session }: AddActivityPageProps) {
         });
 
       if (uploadError) {
-        throw new Error(`Image upload failed for "${name}": ${uploadError.message}`);
+        throw new Error(
+          `Image upload failed for "${name}": ${uploadError.message}`,
+        );
       }
 
       const { error: imageError } = await supabase
@@ -2808,7 +3111,9 @@ function AddActivityPage({ session }: AddActivityPageProps) {
         );
 
       if (imageError) {
-        throw new Error(`Image metadata failed for "${name}": ${imageError.message}`);
+        throw new Error(
+          `Image metadata failed for "${name}": ${imageError.message}`,
+        );
       }
     }
 
@@ -2832,7 +3137,9 @@ function AddActivityPage({ session }: AddActivityPageProps) {
       }
 
       const { data, error: functionError } = await supabase.functions.invoke(
-        importKind === 'activity' ? 'strava-list-activities' : 'strava-list-routes',
+        importKind === 'activity'
+          ? 'strava-list-activities'
+          : 'strava-list-routes',
         {
           body: {
             page: 1,
@@ -2892,7 +3199,9 @@ function AddActivityPage({ session }: AddActivityPageProps) {
       validateActivityImages();
 
       const { data, error: functionError } = await supabase.functions.invoke(
-        importKind === 'activity' ? 'strava-import-activity' : 'strava-import-route',
+        importKind === 'activity'
+          ? 'strava-import-activity'
+          : 'strava-import-route',
         {
           body: {
             ...(importKind === 'activity'
@@ -2920,7 +3229,9 @@ function AddActivityPage({ session }: AddActivityPageProps) {
 
       const uploadedImageCount = await uploadActivityImages(importedActivityId);
 
-      const distanceMadeGood = formatKilometers(data.activity?.distance_made_good ?? null);
+      const distanceMadeGood = formatKilometers(
+        data.activity?.distance_made_good ?? null,
+      );
       const imageMessage =
         uploadedImageCount > 0
           ? ` Uploaded ${uploadedImageCount} image${uploadedImageCount === 1 ? '' : 's'}.`
@@ -2990,48 +3301,48 @@ function AddActivityPage({ session }: AddActivityPageProps) {
   }
 
   return (
-    <main className="activity-admin-page">
-      <section className="activity-admin-shell">
-        <header className="activity-admin-header">
-          <a className="back-link" href="?adminPage">
+    <main className='activity-admin-page'>
+      <section className='activity-admin-shell'>
+        <header className='activity-admin-header'>
+          <a className='back-link' href='/'>
             Back to Project Far Point
           </a>
           <AuthPanel session={session} />
         </header>
 
-        <div className="activity-admin-content">
-          <p className="eyebrow">Project Far Point Admin</p>
+        <div className='activity-admin-content'>
+          <p className='eyebrow'>Project Far Point Admin</p>
           <h1>Add Activity to Project Far Point</h1>
-          <p className="activity-admin-copy">
+          <p className='activity-admin-copy'>
             Connect Strava, choose one completed activity or planned route, and
             import its geometry for display on the globe.
           </p>
 
           {stravaStatus === 'connected' && (
-            <p className="activity-success">
+            <p className='activity-success'>
               Strava is connected. The next step is listing your activities or
               routes for import.
             </p>
           )}
 
           <button
-            className="strava-connect-button"
-            type="button"
+            className='strava-connect-button'
+            type='button'
             onClick={handleConnectStrava}
             disabled={isConnecting || !isProjectOwner(session)}
           >
             {isConnecting ? 'Opening Strava...' : 'Connect Strava'}
           </button>
 
-          <div className="activity-import-panel">
-            <div className="activity-import-kind" aria-label="Import source">
+          <div className='activity-import-panel'>
+            <div className='activity-import-kind' aria-label='Import source'>
               <button
                 className={
                   importKind === 'activity'
                     ? 'activity-import-kind-option activity-import-kind-option-active'
                     : 'activity-import-kind-option'
                 }
-                type="button"
+                type='button'
                 onClick={() => handleImportKindChange('activity')}
               >
                 Activities
@@ -3042,7 +3353,7 @@ function AddActivityPage({ session }: AddActivityPageProps) {
                     ? 'activity-import-kind-option activity-import-kind-option-active'
                     : 'activity-import-kind-option'
                 }
-                type="button"
+                type='button'
                 onClick={() => handleImportKindChange('route')}
               >
                 Routes
@@ -3050,8 +3361,8 @@ function AddActivityPage({ session }: AddActivityPageProps) {
             </div>
 
             <button
-              className="activity-secondary-button"
-              type="button"
+              className='activity-secondary-button'
+              type='button'
               onClick={handleLoadStravaItems}
               disabled={isLoadingItems || !isProjectOwner(session)}
             >
@@ -3061,12 +3372,14 @@ function AddActivityPage({ session }: AddActivityPageProps) {
             </button>
 
             {importKind === 'route' && (
-              <label className="manual-route-field">
+              <label className='manual-route-field'>
                 <span>Route URL or ID</span>
                 <input
                   value={manualRouteReference}
-                  onChange={(event) => setManualRouteReference(event.target.value)}
-                  placeholder="https://www.strava.com/routes/3434650877561151628"
+                  onChange={(event) =>
+                    setManualRouteReference(event.target.value)
+                  }
+                  placeholder='https://www.strava.com/routes/3434650877561151628'
                 />
               </label>
             )}
@@ -3076,8 +3389,8 @@ function AddActivityPage({ session }: AddActivityPageProps) {
                 {((importKind === 'activity' && activities.length > 0) ||
                   (importKind === 'route' && routes.length > 0)) && (
                   <div
-                    className="activity-list"
-                    role="listbox"
+                    className='activity-list'
+                    role='listbox'
                     aria-label={`Strava ${importKindLabelPlural}`}
                   >
                     {importKind === 'activity'
@@ -3088,14 +3401,16 @@ function AddActivityPage({ session }: AddActivityPageProps) {
                                 ? 'activity-option activity-option-selected'
                                 : 'activity-option'
                             }
-                            type="button"
+                            type='button'
                             key={activity.id}
                             onClick={() => setSelectedActivityId(activity.id)}
                           >
                             <span>{activity.name}</span>
                             <small>
-                              {new Date(activity.start_date).toLocaleDateString()} ·{' '}
-                              {(activity.distance / 1000).toFixed(2)} km ·{' '}
+                              {new Date(
+                                activity.start_date,
+                              ).toLocaleDateString()}{' '}
+                              · {(activity.distance / 1000).toFixed(2)} km ·{' '}
                               {activity.sport_type}
                             </small>
                           </button>
@@ -3107,7 +3422,7 @@ function AddActivityPage({ session }: AddActivityPageProps) {
                                 ? 'activity-option activity-option-selected'
                                 : 'activity-option'
                             }
-                            type="button"
+                            type='button'
                             key={route.id}
                             onClick={() => {
                               setManualRouteReference('');
@@ -3127,64 +3442,64 @@ function AddActivityPage({ session }: AddActivityPageProps) {
                   </div>
                 )}
 
-                <div className="activity-metadata-form">
+                <div className='activity-metadata-form'>
                   <label>
                     <span>Project path</span>
                     <select
-                      name="pfpType"
+                      name='pfpType'
                       value={activityMetadata.pfpType}
                       onChange={handleMetadataChange}
                     >
-                      <option value="Voyager">Voyager</option>
-                      <option value="Far Point Trail">Far Point Trail</option>
+                      <option value='Voyager'>Voyager</option>
+                      <option value='Far Point Trail'>Far Point Trail</option>
                     </select>
                   </label>
 
                   <label>
                     <span>Trail name</span>
                     <input
-                      name="trailName"
+                      name='trailName'
                       value={activityMetadata.trailName}
                       onChange={handleMetadataChange}
-                      placeholder="Optional"
+                      placeholder='Optional'
                     />
                   </label>
 
                   <label>
                     <span>Started at</span>
                     <input
-                      name="startedAt"
-                      type="datetime-local"
+                      name='startedAt'
+                      type='datetime-local'
                       value={activityMetadata.startedAt}
                       onChange={handleMetadataChange}
                     />
                   </label>
 
-                  <label className="activity-description-field">
+                  <label className='activity-description-field'>
                     <span>Text description</span>
                     <textarea
-                      name="textDescription"
+                      name='textDescription'
                       value={activityMetadata.textDescription}
                       onChange={handleMetadataChange}
                       rows={10}
-                      placeholder="Write the route notes, story, conditions, links, or other context here."
+                      placeholder='Write the route notes, story, conditions, links, or other context here.'
                     />
                   </label>
 
                   <button
-                    className="activity-secondary-button activity-lorem-button"
-                    type="button"
+                    className='activity-secondary-button activity-lorem-button'
+                    type='button'
                     onClick={handleGenerateLoremIpsum}
                   >
                     Generate Lorem Ipsum
                   </button>
 
-                  <div className="activity-image-upload-section">
-                    <div className="activity-image-upload-header">
+                  <div className='activity-image-upload-section'>
+                    <div className='activity-image-upload-header'>
                       <span>Activity images</span>
                       <button
-                        className="activity-secondary-button"
-                        type="button"
+                        className='activity-secondary-button'
+                        type='button'
                         onClick={handleAddImageInput}
                         disabled={activityImages.length >= 10}
                       >
@@ -3193,9 +3508,12 @@ function AddActivityPage({ session }: AddActivityPageProps) {
                     </div>
 
                     {activityImages.length > 0 && (
-                      <div className="activity-image-upload-list">
+                      <div className='activity-image-upload-list'>
                         {activityImages.map((image, index) => (
-                          <div className="activity-image-upload-row" key={image.id}>
+                          <div
+                            className='activity-image-upload-row'
+                            key={image.id}
+                          >
                             <label>
                               <span>Name</span>
                               <input
@@ -3222,15 +3540,17 @@ function AddActivityPage({ session }: AddActivityPageProps) {
                                     event.target.value,
                                   )
                                 }
-                                placeholder={index === 0 ? 'my dog' : 'pretty butterfly'}
+                                placeholder={
+                                  index === 0 ? 'my dog' : 'pretty butterfly'
+                                }
                               />
                             </label>
 
-                            <label className="activity-image-file-field">
+                            <label className='activity-image-file-field'>
                               <span>File</span>
                               <input
-                                type="file"
-                                accept="image/jpeg,image/png,image/webp,image/gif"
+                                type='file'
+                                accept='image/jpeg,image/png,image/webp,image/gif'
                                 onChange={(event) =>
                                   handleImageFileChange(
                                     image.id,
@@ -3241,8 +3561,8 @@ function AddActivityPage({ session }: AddActivityPageProps) {
                             </label>
 
                             <button
-                              className="activity-image-remove-button"
-                              type="button"
+                              className='activity-image-remove-button'
+                              type='button'
                               onClick={() => handleRemoveImageInput(image.id)}
                               aria-label={`Remove image ${index + 1}`}
                             >
@@ -3256,8 +3576,8 @@ function AddActivityPage({ session }: AddActivityPageProps) {
                 </div>
 
                 <button
-                  className="strava-connect-button"
-                  type="button"
+                  className='strava-connect-button'
+                  type='button'
                   onClick={handleImportActivity}
                   disabled={
                     isImportingActivity ||
@@ -3274,13 +3594,13 @@ function AddActivityPage({ session }: AddActivityPageProps) {
           </div>
 
           {!isProjectOwner(session) && (
-            <p className="activity-error">
-              Sign in as the Project Far Point owner to import Strava
-              activities or routes.
+            <p className='activity-error'>
+              Sign in as the Project Far Point owner to import Strava activities
+              or routes.
             </p>
           )}
-          {status && <p className="activity-status">{status}</p>}
-          {error && <p className="activity-error">{error}</p>}
+          {status && <p className='activity-status'>{status}</p>}
+          {error && <p className='activity-error'>{error}</p>}
         </div>
       </section>
     </main>
@@ -3295,6 +3615,8 @@ type ActivityStoryProps = {
   isArriving?: boolean;
 };
 
+const SHOW_FUNDRAISER = false;
+
 type MobileMode = 'project' | 'progress' | 'search' | 'donate';
 type DesktopContentTab = 'story' | 'search';
 
@@ -3303,7 +3625,10 @@ type ActivityImageCarouselProps = {
   onOpenImage: (image: ProjectActivityImage) => void;
 };
 
-function ActivityImageCarousel({ images, onOpenImage }: ActivityImageCarouselProps) {
+function ActivityImageCarousel({
+  images,
+  onOpenImage,
+}: ActivityImageCarouselProps) {
   const [activeIndex, setActiveIndex] = useState(0);
   const touchStartX = useRef<number | null>(null);
   const safeActiveIndex = images.length > 0 ? activeIndex % images.length : 0;
@@ -3354,51 +3679,53 @@ function ActivityImageCarousel({ images, onOpenImage }: ActivityImageCarouselPro
 
   return (
     <figure
-      className="route-story-carousel"
+      className='route-story-carousel'
       onTouchStart={handleTouchStart}
       onTouchEnd={handleTouchEnd}
     >
-      <div className="route-story-carousel-stage">
+      <div className='route-story-carousel-stage'>
         {images.length > 1 && (
           <button
-            className="route-story-carousel-control route-story-carousel-previous"
-            type="button"
+            className='route-story-carousel-control route-story-carousel-previous'
+            type='button'
             onClick={showPreviousImage}
-            aria-label="Previous image"
+            aria-label='Previous image'
           >
-            <span aria-hidden="true">‹</span>
+            <span aria-hidden='true'>‹</span>
           </button>
         )}
 
         <button
-          className="route-story-carousel-button"
-          type="button"
+          className='route-story-carousel-button'
+          type='button'
           onClick={() => onOpenImage(activeImage)}
         >
           <img
             key={activeImage.id}
             src={getActivityImagePublicUrl(activeImage)}
-            alt={activeImage.alt_text || activeImage.caption || activeImage.name}
-            loading="lazy"
+            alt={
+              activeImage.alt_text || activeImage.caption || activeImage.name
+            }
+            loading='lazy'
           />
         </button>
 
         {images.length > 1 && (
           <button
-            className="route-story-carousel-control route-story-carousel-next"
-            type="button"
+            className='route-story-carousel-control route-story-carousel-next'
+            type='button'
             onClick={showNextImage}
-            aria-label="Next image"
+            aria-label='Next image'
           >
-            <span aria-hidden="true">›</span>
+            <span aria-hidden='true'>›</span>
           </button>
         )}
       </div>
 
-      <div className="route-story-carousel-footer">
+      <div className='route-story-carousel-footer'>
         {activeImage.caption && <figcaption>{activeImage.caption}</figcaption>}
         {images.length > 1 && (
-          <span className="route-story-carousel-count">
+          <span className='route-story-carousel-count'>
             {safeActiveIndex + 1} / {images.length}
           </span>
         )}
@@ -3417,16 +3744,16 @@ function renderActivityImageFigure(
   const caption = captionOverride?.trim() || image.caption?.trim();
 
   return (
-    <figure className="route-story-image" key={key}>
+    <figure className='route-story-image' key={key}>
       <button
-        className="route-story-image-button"
-        type="button"
+        className='route-story-image-button'
+        type='button'
         onClick={() => onOpenImage(image)}
       >
         <img
           src={imageUrl}
           alt={image.alt_text || caption || image.name}
-          loading="lazy"
+          loading='lazy'
         />
       </button>
       {caption && <figcaption>{caption}</figcaption>}
@@ -3440,8 +3767,12 @@ function renderExternalActivityImageFigure(
   caption?: string,
 ) {
   return (
-    <figure className="route-story-image" key={key}>
-      <img src={url} alt={caption || 'Generated test activity'} loading="lazy" />
+    <figure className='route-story-image' key={key}>
+      <img
+        src={url}
+        alt={caption || 'Generated test activity'}
+        loading='lazy'
+      />
       {caption && <figcaption>{caption}</figcaption>}
     </figure>
   );
@@ -3505,7 +3836,8 @@ function renderActivityParagraph(
         shortcodeAttributes.images
           ?.split(',')
           .map((name) => imagesByName.get(name.trim().toLowerCase()))
-          .filter((image): image is ProjectActivityImage => Boolean(image)) ?? [];
+          .filter((image): image is ProjectActivityImage => Boolean(image)) ??
+        [];
 
       renderedShortcode = renderActivityImageCarousel(
         carouselImages,
@@ -3537,14 +3869,17 @@ function renderActivityParagraph(
       }
 
       renderedShortcode = (
-        <figure className="route-story-video" key={`video-${paragraphIndex}-${matchIndex}`}>
-          <div className="route-story-video-frame">
+        <figure
+          className='route-story-video'
+          key={`video-${paragraphIndex}-${matchIndex}`}
+        >
+          <div className='route-story-video-frame'>
             <iframe
               src={embedUrl}
               title={caption || 'Activity video'}
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+              allow='accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share'
               allowFullScreen
-              loading="lazy"
+              loading='lazy'
             />
           </div>
           {caption && <figcaption>{caption}</figcaption>}
@@ -3583,7 +3918,9 @@ function renderActivityParagraph(
 }
 
 function useProjectActivityImages(activityId: string) {
-  const [activityImages, setActivityImages] = useState<ProjectActivityImage[]>([]);
+  const [activityImages, setActivityImages] = useState<ProjectActivityImage[]>(
+    [],
+  );
   const [reloadKey, setReloadKey] = useState(0);
 
   const reloadActivityImages = useCallback(() => {
@@ -3600,7 +3937,9 @@ function useProjectActivityImages(activityId: string) {
 
     supabase
       .from('project_activity_images')
-      .select('id,activity_id,name,storage_bucket,storage_path,caption,alt_text,sort_order')
+      .select(
+        'id,activity_id,name,storage_bucket,storage_path,caption,alt_text,sort_order',
+      )
       .eq('activity_id', activityId)
       .order('sort_order', { ascending: true })
       .order('created_at', { ascending: true })
@@ -3637,7 +3976,9 @@ function ActivityStory({
   isArriving = false,
 }: ActivityStoryProps) {
   const { activityImages } = useProjectActivityImages(activity.id);
-  const [activeImage, setActiveImage] = useState<ProjectActivityImage | null>(null);
+  const [activeImage, setActiveImage] = useState<ProjectActivityImage | null>(
+    null,
+  );
   const openActivityImage = useCallback((image: ProjectActivityImage) => {
     setActiveImage(image);
   }, []);
@@ -3655,41 +3996,45 @@ function ActivityStory({
     activity.pfp_type === 'Far Point Trail'
       ? 'journey-far-point'
       : 'journey-voyager';
-  const activeImageUrl = activeImage ? getActivityImagePublicUrl(activeImage) : '';
+  const activeImageUrl = activeImage
+    ? getActivityImagePublicUrl(activeImage)
+    : '';
 
   return (
-    <article className={`route-story${isArriving ? ' route-story-arriving' : ''}`}>
+    <article
+      className={`route-story${isArriving ? ' route-story-arriving' : ''}`}
+    >
       <p className={`eyebrow ${activityRouteClass}`}>
         {activity.pfp_type ?? 'Project Far Point Route'}
       </p>
       <h2>{activity.trail_name || activity.name}</h2>
-      <div className="route-story-meta" aria-label="Route details">
+      <div className='route-story-meta' aria-label='Route details'>
         <button
-          className="route-story-back"
-          type="button"
+          className='route-story-back'
+          type='button'
           onClick={onBack}
-          aria-label="Back to Project Far Point"
+          aria-label='Back to Project Far Point'
         >
-          <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
-            <path d="M3 10.8 12 3l9 7.8" />
-            <path d="M5.5 9.2V21h13V9.2" />
-            <path d="M9.5 21v-6.2h5V21" />
+          <svg aria-hidden='true' viewBox='0 0 24 24' focusable='false'>
+            <path d='M3 10.8 12 3l9 7.8' />
+            <path d='M5.5 9.2V21h13V9.2' />
+            <path d='M9.5 21v-6.2h5V21' />
           </svg>
         </button>
         {activityDateTime && <span>{activityDateTime}</span>}
         {correctedDistance && <span>Distance: {correctedDistance}</span>}
         {distanceMadeGood && <span>Made good: {distanceMadeGood}</span>}
         <button
-          className="route-story-map-link"
-          type="button"
+          className='route-story-map-link'
+          type='button'
           onClick={() => onFocusActivity(activity.id)}
         >
           Zoom to Activity
         </button>
         {activity.pfp_type && (
           <button
-            className="route-story-map-link route-story-progress-link"
-            type="button"
+            className='route-story-map-link route-story-progress-link'
+            type='button'
             onClick={() => onFocusProgressPosition(activity.id)}
           >
             Progress Position
@@ -3697,45 +4042,54 @@ function ActivityStory({
         )}
         {activity.strava_url && (
           <a
-            className="route-story-strava-link"
+            className='route-story-strava-link'
             href={activity.strava_url}
-            target="_blank"
-            rel="noreferrer noopener"
+            target='_blank'
+            rel='noreferrer noopener'
           >
             {stravaLinkLabel}
           </a>
         )}
       </div>
-      <div className="route-story-copy">
-        {paragraphs.flatMap((paragraph, index) =>
-          renderActivityParagraph(paragraph, index, activityImages, openActivityImage),
+      <div className='route-story-copy'>
+        {paragraphs.flatMap<ReactNode>((paragraph, index) =>
+          renderActivityParagraph(
+            paragraph,
+            index,
+            activityImages,
+            openActivityImage,
+          ),
         )}
       </div>
       {activeImage && (
         <div
-          className="route-story-lightbox"
-          role="dialog"
-          aria-modal="true"
+          className='route-story-lightbox'
+          role='dialog'
+          aria-modal='true'
           aria-label={activeImage.caption || activeImage.name}
           onClick={() => setActiveImage(null)}
         >
           <button
-            className="route-story-lightbox-close"
-            type="button"
+            className='route-story-lightbox-close'
+            type='button'
             onClick={() => setActiveImage(null)}
-            aria-label="Close image"
+            aria-label='Close image'
           >
             Close
           </button>
           <figure
-            className="route-story-lightbox-figure"
+            className='route-story-lightbox-figure'
             onClick={(event) => event.stopPropagation()}
           >
             <img
               src={activeImageUrl}
-              alt={activeImage.alt_text || activeImage.caption || activeImage.name}
+              alt={
+                activeImage.alt_text || activeImage.caption || activeImage.name
+              }
             />
-            {activeImage.caption && <figcaption>{activeImage.caption}</figcaption>}
+            {activeImage.caption && (
+              <figcaption>{activeImage.caption}</figcaption>
+            )}
           </figure>
         </div>
       )}
@@ -3764,11 +4118,17 @@ function ProgressStory({
   onProgressStorySaved,
   isArriving = false,
 }: ProgressStoryProps) {
-  const { activityImages, reloadActivityImages } = useProjectActivityImages(activity.id);
-  const [nearbyPlaceLookup, setNearbyPlaceLookup] = useState<NearbyPlaceLookup>({
-    status: 'idle',
-  });
-  const [activeImage, setActiveImage] = useState<ProjectActivityImage | null>(null);
+  const { activityImages, reloadActivityImages } = useProjectActivityImages(
+    activity.id,
+  );
+  const [nearbyPlaceLookup, setNearbyPlaceLookup] = useState<NearbyPlaceLookup>(
+    {
+      status: 'idle',
+    },
+  );
+  const [activeImage, setActiveImage] = useState<ProjectActivityImage | null>(
+    null,
+  );
   const [draftStory, setDraftStory] = useState(activity.progress_story ?? '');
   const [isEditingStory, setIsEditingStory] = useState(false);
   const [isGeneratingStory, setIsGeneratingStory] = useState(false);
@@ -3789,12 +4149,16 @@ function ProgressStory({
   const storyParagraphs = displayedStory
     ? displayedStory.split(/\n{2,}/).map((paragraph) => paragraph.trim())
     : [];
-  const activeImageUrl = activeImage ? getActivityImagePublicUrl(activeImage) : '';
+  const activeImageUrl = activeImage
+    ? getActivityImagePublicUrl(activeImage)
+    : '';
   const openActivityImage = useCallback((image: ProjectActivityImage) => {
     setActiveImage(image);
   }, []);
   const progressDistanceLabel =
-    progressDistance === null ? 'Calculating...' : formatKilometers(progressDistance);
+    progressDistance === null
+      ? 'Calculating...'
+      : formatKilometers(progressDistance);
   const percentCompleteLabel =
     progressDistance === null
       ? 'Calculating...'
@@ -3854,7 +4218,9 @@ function ProgressStory({
     setStoryError('');
 
     if (!isOwner) {
-      setStoryError('Only the Project Far Point owner can generate progress stories.');
+      setStoryError(
+        'Only the Project Far Point owner can generate progress stories.',
+      );
       return;
     }
 
@@ -3881,7 +4247,9 @@ function ProgressStory({
             progressKilometers: progressDistance,
             percentComplete: (progressDistance / halfJourneyKilometers) * 100,
             nearbyPlace:
-              nearbyPlaceLookup.status === 'ready' ? nearbyPlaceLookup.label : null,
+              nearbyPlaceLookup.status === 'ready'
+                ? nearbyPlaceLookup.label
+                : null,
           },
         },
       );
@@ -3918,7 +4286,9 @@ function ProgressStory({
     setStoryError('');
 
     if (!isOwner) {
-      setStoryError('Only the Project Far Point owner can save progress stories.');
+      setStoryError(
+        'Only the Project Far Point owner can save progress stories.',
+      );
       return;
     }
 
@@ -3947,10 +4317,14 @@ function ProgressStory({
 
       onProgressStorySaved(data as SelectedProjectActivity);
       setIsEditingStory(false);
-      setStoryStatus(nextStory ? 'Progress story saved.' : 'Progress story cleared.');
+      setStoryStatus(
+        nextStory ? 'Progress story saved.' : 'Progress story cleared.',
+      );
     } catch (saveError) {
       setStoryError(
-        saveError instanceof Error ? saveError.message : 'Could not save progress story.',
+        saveError instanceof Error
+          ? saveError.message
+          : 'Could not save progress story.',
       );
     } finally {
       setIsSavingStory(false);
@@ -3963,7 +4337,9 @@ function ProgressStory({
     setImageUploadError('');
 
     if (!isOwner) {
-      setImageUploadError('Only the Project Far Point owner can upload images.');
+      setImageUploadError(
+        'Only the Project Far Point owner can upload images.',
+      );
       return;
     }
 
@@ -4036,7 +4412,9 @@ function ProgressStory({
       );
     } catch (uploadError) {
       setImageUploadError(
-        uploadError instanceof Error ? uploadError.message : 'Could not upload image.',
+        uploadError instanceof Error
+          ? uploadError.message
+          : 'Could not upload image.',
       );
     } finally {
       setIsUploadingImage(false);
@@ -4044,47 +4422,50 @@ function ProgressStory({
   }
 
   return (
-    <article className={`route-story progress-story${isArriving ? ' route-story-arriving' : ''}`}>
+    <article
+      className={`route-story progress-story${isArriving ? ' route-story-arriving' : ''}`}
+    >
       <p className={`eyebrow ${activityRouteClass}`}>
         {activity.pfp_type ?? 'Project Far Point Route'} Progress
       </p>
       <h2>{activity.trail_name || activity.name}</h2>
-      <div className="route-story-meta" aria-label="Progress actions">
+      <div className='route-story-meta' aria-label='Progress actions'>
         <button
-          className="route-story-back"
-          type="button"
+          className='route-story-back'
+          type='button'
           onClick={onBack}
-          aria-label="Back to Project Far Point"
+          aria-label='Back to Project Far Point'
         >
-          <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
-            <path d="M3 10.8 12 3l9 7.8" />
-            <path d="M5.5 9.2V21h13V9.2" />
-            <path d="M9.5 21v-6.2h5V21" />
+          <svg aria-hidden='true' viewBox='0 0 24 24' focusable='false'>
+            <path d='M3 10.8 12 3l9 7.8' />
+            <path d='M5.5 9.2V21h13V9.2' />
+            <path d='M9.5 21v-6.2h5V21' />
           </svg>
         </button>
         {activityDateTime && <span>{activityDateTime}</span>}
         {correctedDistance && <span>Distance: {correctedDistance}</span>}
         {distanceMadeGood && <span>Made good: {distanceMadeGood}</span>}
         <button
-          className="route-story-map-link"
-          type="button"
+          className='route-story-map-link'
+          type='button'
           onClick={() => onFocusActivity(activity.id)}
         >
           Zoom to Activity
         </button>
         <button
-          className="route-story-map-link route-story-progress-link"
-          type="button"
+          className='route-story-map-link route-story-progress-link'
+          type='button'
           onClick={() => onFocusProgressPosition(activity.id)}
         >
           Zoom to Progress
         </button>
       </div>
-      <dl className="progress-story-facts">
+      <dl className='progress-story-facts'>
         <div>
           <dt>Position</dt>
           <dd>
-            {position ? formatLatLon(position) : 'Calculating...'} - {nearbyPlaceLabel}
+            {position ? formatLatLon(position) : 'Calculating...'} -{' '}
+            {nearbyPlaceLabel}
           </dd>
         </div>
         <div>
@@ -4096,11 +4477,16 @@ function ProgressStory({
           <dd>{percentCompleteLabel}</dd>
         </div>
       </dl>
-      <div className="progress-story-placeholder">
+      <div className='progress-story-placeholder'>
         {storyParagraphs.length > 0 ? (
-          <div className="route-story-copy">
-            {storyParagraphs.flatMap((paragraph, index) =>
-              renderActivityParagraph(paragraph, index, activityImages, openActivityImage),
+          <div className='route-story-copy'>
+            {storyParagraphs.flatMap<ReactNode>((paragraph, index) =>
+              renderActivityParagraph(
+                paragraph,
+                index,
+                activityImages,
+                openActivityImage,
+              ),
             )}
           </div>
         ) : (
@@ -4108,27 +4494,30 @@ function ProgressStory({
         )}
       </div>
       {isOwner && (
-        <section className="progress-story-editor" aria-label="Progress story editor">
-          <div className="progress-story-editor-actions">
+        <section
+          className='progress-story-editor'
+          aria-label='Progress story editor'
+        >
+          <div className='progress-story-editor-actions'>
             <button
-              className="route-story-map-link"
-              type="button"
+              className='route-story-map-link'
+              type='button'
               onClick={handleGenerateProgressStory}
               disabled={isGeneratingStory || !position}
             >
               {isGeneratingStory ? 'Generating...' : 'Generate Story'}
             </button>
             <button
-              className="route-story-map-link"
-              type="button"
+              className='route-story-map-link'
+              type='button'
               onClick={() => setIsEditingStory((currentValue) => !currentValue)}
             >
               {isEditingStory ? 'Close Editor' : 'Edit Story'}
             </button>
             {isEditingStory && (
               <button
-                className="route-story-map-link"
-                type="button"
+                className='route-story-map-link'
+                type='button'
                 onClick={handleSaveProgressStory}
                 disabled={isSavingStory}
               >
@@ -4138,78 +4527,91 @@ function ProgressStory({
           </div>
           {isEditingStory && (
             <textarea
-              className="progress-story-draft"
+              className='progress-story-draft'
               value={draftStory}
               onChange={(event) => setDraftStory(event.target.value)}
-              aria-label="Progress story draft"
+              aria-label='Progress story draft'
             />
           )}
-          {storyStatus && <p className="activity-status">{storyStatus}</p>}
-          {storyError && <p className="activity-error">{storyError}</p>}
-          <form className="progress-image-upload" onSubmit={handleUploadProgressImage}>
+          {storyStatus && <p className='activity-status'>{storyStatus}</p>}
+          {storyError && <p className='activity-error'>{storyError}</p>}
+          <form
+            className='progress-image-upload'
+            onSubmit={handleUploadProgressImage}
+          >
             <label>
               Image name
               <input
-                type="text"
+                type='text'
                 value={uploadName}
                 onChange={(event) => setUploadName(event.target.value)}
-                placeholder="e.g. ocean_current"
+                placeholder='e.g. ocean_current'
               />
             </label>
             <label>
               Caption
               <input
-                type="text"
+                type='text'
                 value={uploadCaption}
                 onChange={(event) => setUploadCaption(event.target.value)}
-                placeholder="Optional caption"
+                placeholder='Optional caption'
               />
             </label>
             <label>
               Image file
               <input
-                type="file"
-                accept="image/jpeg,image/png,image/webp,image/gif"
-                onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)}
+                type='file'
+                accept='image/jpeg,image/png,image/webp,image/gif'
+                onChange={(event) =>
+                  setUploadFile(event.target.files?.[0] ?? null)
+                }
               />
             </label>
             <button
-              className="route-story-map-link"
-              type="submit"
+              className='route-story-map-link'
+              type='submit'
               disabled={isUploadingImage}
             >
               {isUploadingImage ? 'Uploading...' : 'Upload Image'}
             </button>
           </form>
-          {imageUploadStatus && <p className="activity-status">{imageUploadStatus}</p>}
-          {imageUploadError && <p className="activity-error">{imageUploadError}</p>}
+          {imageUploadStatus && (
+            <p className='activity-status'>{imageUploadStatus}</p>
+          )}
+          {imageUploadError && (
+            <p className='activity-error'>{imageUploadError}</p>
+          )}
         </section>
       )}
       {activeImage && (
         <div
-          className="route-story-lightbox"
-          role="dialog"
-          aria-modal="true"
+          className='route-story-lightbox'
+          role='dialog'
+          aria-modal='true'
           aria-label={activeImage.caption || activeImage.name}
           onClick={() => setActiveImage(null)}
         >
           <button
-            className="route-story-lightbox-close"
-            type="button"
+            className='route-story-lightbox-close'
+            type='button'
             onClick={() => setActiveImage(null)}
-            aria-label="Close image"
+            aria-label='Close image'
           >
             Close
           </button>
           <figure
-            className="route-story-lightbox-figure"
+            className='route-story-lightbox-figure'
             onClick={(event) => event.stopPropagation()}
           >
             <img
               src={activeImageUrl}
-              alt={activeImage.alt_text || activeImage.caption || activeImage.name}
+              alt={
+                activeImage.alt_text || activeImage.caption || activeImage.name
+              }
             />
-            {activeImage.caption && <figcaption>{activeImage.caption}</figcaption>}
+            {activeImage.caption && (
+              <figcaption>{activeImage.caption}</figcaption>
+            )}
           </figure>
         </div>
       )}
@@ -4233,44 +4635,52 @@ function getJourneyProgressDetails(distanceKilometers: number) {
 
 function JourneySummary({ progress }: JourneySummaryProps) {
   const voyagerProgress = getJourneyProgressDetails(progress.Voyager);
-  const farPointProgress = getJourneyProgressDetails(progress['Far Point Trail']);
+  const farPointProgress = getJourneyProgressDetails(
+    progress['Far Point Trail'],
+  );
 
   return (
-    <aside className="journey-summary" aria-label="Project route summary">
-      <div className="summary-item summary-voyager">
-        <span className="summary-kicker journey-voyager">Voyager</span>
-        <span className="summary-label">New Zealand to Santiago de Compostela</span>
-        <span className="summary-progress-text">
-          <strong>{voyagerProgress.distanceLabel}</strong> of 20,038 km completed{' '}
-          <strong>({voyagerProgress.percentLabel})</strong>
+    <aside className='journey-summary' aria-label='Project route summary'>
+      <div className='summary-item summary-voyager'>
+        <span className='summary-kicker journey-voyager'>Voyager</span>
+        <span className='summary-label'>
+          New Zealand to Spain
         </span>
-        <span className="summary-progress" aria-hidden="true">
+        <span className='summary-progress-text'>
+          <strong>{voyagerProgress.distanceLabel}</strong> of 20,038 km
+          completed <strong>({voyagerProgress.percentLabel})</strong>
+        </span>
+        <span className='summary-progress' aria-hidden='true'>
           <span
-            className="summary-progress-fill summary-progress-voyager"
+            className='summary-progress-fill summary-progress-voyager'
             style={{ width: voyagerProgress.progressWidth }}
           />
         </span>
       </div>
-      <div className="summary-item summary-far-point">
-        <span className="summary-kicker journey-far-point">Far Point Trail</span>
-        <span className="summary-label">Santiago de Compostela to New Zealand</span>
-        <span className="summary-progress-text">
-          <strong>{farPointProgress.distanceLabel}</strong> of 20,038 km completed{' '}
-          <strong>({farPointProgress.percentLabel})</strong>
+      <div className='summary-item summary-far-point'>
+        <span className='summary-kicker journey-far-point'>
+          Far Point Trail
         </span>
-        <span className="summary-progress" aria-hidden="true">
+        <span className='summary-label'>
+          New Zealand to Spain
+        </span>
+        <span className='summary-progress-text'>
+          <strong>{farPointProgress.distanceLabel}</strong> of 20,038 km
+          completed <strong>({farPointProgress.percentLabel})</strong>
+        </span>
+        <span className='summary-progress' aria-hidden='true'>
           <span
-            className="summary-progress-fill summary-progress-far-point"
+            className='summary-progress-fill summary-progress-far-point'
             style={{ width: farPointProgress.progressWidth }}
           />
         </span>
       </div>
-      <div className="summary-route">
-        <span className="route-dot route-dot-start" />
-        <span className="route-line route-line-voyager" />
-        <span className="route-dot route-dot-middle" />
-        <span className="route-line route-line-far-point" />
-        <span className="route-dot route-dot-end" />
+      <div className='summary-route'>
+        <span className='route-dot route-dot-start' />
+        <span className='route-line route-line-voyager' />
+        <span className='route-dot route-dot-middle' />
+        <span className='route-line route-line-far-point' />
+        <span className='route-dot route-dot-end' />
       </div>
     </aside>
   );
@@ -4278,17 +4688,21 @@ function JourneySummary({ progress }: JourneySummaryProps) {
 
 function CharityPanel() {
   return (
-    <aside className="charity-panel" aria-label="Charity donations">
-      <p className="charity-kicker">Future fundraiser</p>
-      <p className="charity-copy">
+    <aside className='charity-panel' aria-label='Charity donations'>
+      <p className='charity-kicker'>Future fundraiser</p>
+      <p className='charity-copy'>
         Members will be able to support trail stewardship through a partner
         charity, likely the Great Divide Trail Association.
       </p>
-      <div className="charity-stats" aria-label="Donation impact">
-        <span><strong>0</strong> members</span>
-        <span><strong>$0</strong> donated</span>
+      <div className='charity-stats' aria-label='Donation impact'>
+        <span>
+          <strong>0</strong> members
+        </span>
+        <span>
+          <strong>$0</strong> donated
+        </span>
       </div>
-      <a className="donate-link" href="#donate" aria-disabled="true">
+      <a className='donate-link' href='#donate' aria-disabled='true'>
         Donate
       </a>
     </aside>
@@ -4342,7 +4756,8 @@ function SearchPanel({ onActivitySelect }: SearchPanelProps) {
   const [city, setCity] = useState('');
   const [keywordQuery, setKeywordQuery] = useState('');
   const [sortField, setSortField] = useState<SearchSortField>('date');
-  const [sortDirection, setSortDirection] = useState<SearchSortDirection>('desc');
+  const [sortDirection, setSortDirection] =
+    useState<SearchSortDirection>('desc');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -4362,10 +4777,26 @@ function SearchPanel({ onActivitySelect }: SearchPanelProps) {
           return;
         }
 
-        const { data, error } = await supabase
+        const searchResult = await supabase
           .from('project_activities')
           .select(projectActivitySelectColumns)
-          .or('geometry_simplified_medium.not.is.null,geometry_geojson.not.is.null');
+          .or(
+            'geometry_simplified_medium.not.is.null,geometry_geojson.not.is.null',
+          );
+        let data = searchResult.data as ProjectActivity[] | null;
+        let error: unknown = searchResult.error;
+
+        if (isMissingProgressStoryColumnError(error)) {
+          const fallbackResult = await supabase
+            .from('project_activities')
+            .select(projectActivityBaseSelectColumns)
+            .or(
+              'geometry_simplified_medium.not.is.null,geometry_geojson.not.is.null',
+            );
+
+          data = fallbackResult.data as ProjectActivity[] | null;
+          error = fallbackResult.error;
+        }
 
         if (isCancelled) {
           return;
@@ -4405,7 +4836,13 @@ function SearchPanel({ onActivitySelect }: SearchPanelProps) {
     [activities, projectPath],
   );
   const availableNames = useMemo(
-    () => uniqueSorted(pathActivities.flatMap((activity) => [activity.name, activity.trail_name])),
+    () =>
+      uniqueSorted(
+        pathActivities.flatMap((activity) => [
+          activity.name,
+          activity.trail_name,
+        ]),
+      ),
     [pathActivities],
   );
   const availableContinents = useMemo(
@@ -4436,14 +4873,18 @@ function SearchPanel({ onActivitySelect }: SearchPanelProps) {
   const availableRegions = useMemo(
     () =>
       canFilterRegion
-        ? uniqueSorted(countryActivities.map((activity) => activity[regionField]))
+        ? uniqueSorted(
+            countryActivities.map((activity) => activity[regionField]),
+          )
         : [],
     [canFilterRegion, countryActivities, regionField],
   );
   const regionActivities = useMemo(
     () =>
       canFilterRegion && region
-        ? countryActivities.filter((activity) => activity[regionField] === region)
+        ? countryActivities.filter(
+            (activity) => activity[regionField] === region,
+          )
         : countryActivities,
     [canFilterRegion, countryActivities, region, regionField],
   );
@@ -4511,7 +4952,9 @@ function SearchPanel({ onActivitySelect }: SearchPanelProps) {
             .join(' ')
             .toLowerCase();
 
-          return keywordTerms.some((keyword) => searchableText.includes(keyword));
+          return keywordTerms.some((keyword) =>
+            searchableText.includes(keyword),
+          );
         }
 
         return true;
@@ -4522,11 +4965,16 @@ function SearchPanel({ onActivitySelect }: SearchPanelProps) {
         if (sortField === 'date') {
           comparison = getActivityDateValue(left) - getActivityDateValue(right);
         } else if (sortField === 'distance') {
-          comparison = getActivityDistanceValue(left) - getActivityDistanceValue(right);
+          comparison =
+            getActivityDistanceValue(left) - getActivityDistanceValue(right);
         } else if (sortField === 'name') {
-          comparison = getActivityDisplayName(left).localeCompare(getActivityDisplayName(right));
+          comparison = getActivityDisplayName(left).localeCompare(
+            getActivityDisplayName(right),
+          );
         } else {
-          comparison = getActivityLocationLabel(left).localeCompare(getActivityLocationLabel(right));
+          comparison = getActivityLocationLabel(left).localeCompare(
+            getActivityLocationLabel(right),
+          );
         }
 
         return sortDirection === 'asc' ? comparison : -comparison;
@@ -4546,7 +4994,9 @@ function SearchPanel({ onActivitySelect }: SearchPanelProps) {
     sortField,
   ]);
 
-  function handleProjectPathChange(nextProjectPath: Exclude<ProjectPathFilter, ''>) {
+  function handleProjectPathChange(
+    nextProjectPath: Exclude<ProjectPathFilter, ''>,
+  ) {
     setProjectPath(nextProjectPath);
     setContinent('');
     setCountry('');
@@ -4584,28 +5034,34 @@ function SearchPanel({ onActivitySelect }: SearchPanelProps) {
   }
 
   return (
-    <section className="search-panel" aria-label="Search activities">
-      <div className="search-panel-header">
+    <section className='search-panel' aria-label='Search activities'>
+      <div className='search-panel-header'>
         <div>
-          <p className="eyebrow">Search</p>
+          <p className='eyebrow'>Search</p>
           <h2>Find an Activity</h2>
         </div>
-        <button className="search-clear-button" type="button" onClick={handleClearFilters}>
+        <button
+          className='search-clear-button'
+          type='button'
+          onClick={handleClearFilters}
+        >
           Clear
         </button>
       </div>
 
-      <div className="search-path-toggle" aria-label="Project path">
+      <div className='search-path-toggle' aria-label='Project path'>
         <button
           className={projectPath === 'Voyager' ? 'search-path-active' : ''}
-          type="button"
+          type='button'
           onClick={() => handleProjectPathChange('Voyager')}
         >
           Voyager
         </button>
         <button
-          className={projectPath === 'Far Point Trail' ? 'search-path-active' : ''}
-          type="button"
+          className={
+            projectPath === 'Far Point Trail' ? 'search-path-active' : ''
+          }
+          type='button'
           onClick={() => handleProjectPathChange('Far Point Trail')}
         >
           Far Point Trail
@@ -4613,34 +5069,36 @@ function SearchPanel({ onActivitySelect }: SearchPanelProps) {
       </div>
 
       {!projectPath && (
-        <p className="search-empty-state">Choose Voyager or Far Point Trail to start searching.</p>
+        <p className='search-empty-state'>
+          Choose Voyager or Far Point Trail to start searching.
+        </p>
       )}
 
       {projectPath && (
         <>
-          <div className="search-controls">
-            <label className="search-field search-field-wide">
+          <div className='search-controls'>
+            <label className='search-field search-field-wide'>
               <span>Activity name</span>
               <input
                 value={nameQuery}
                 onChange={(event) => setNameQuery(event.target.value)}
-                list="activity-name-options"
-                placeholder="Start typing an activity name"
+                list='activity-name-options'
+                placeholder='Start typing an activity name'
               />
-              <datalist id="activity-name-options">
+              <datalist id='activity-name-options'>
                 {availableNames.slice(0, 250).map((name) => (
                   <option value={name} key={name} />
                 ))}
               </datalist>
             </label>
 
-            <label className="search-field">
+            <label className='search-field'>
               <span>Continent</span>
               <select
                 value={continent}
                 onChange={(event) => handleContinentChange(event.target.value)}
               >
-                <option value="">Any continent</option>
+                <option value=''>Any continent</option>
                 {availableContinents.map((value) => (
                   <option value={value} key={value}>
                     {value}
@@ -4649,13 +5107,13 @@ function SearchPanel({ onActivitySelect }: SearchPanelProps) {
               </select>
             </label>
 
-            <label className="search-field">
+            <label className='search-field'>
               <span>Country</span>
               <select
                 value={country}
                 onChange={(event) => handleCountryChange(event.target.value)}
               >
-                <option value="">Any country</option>
+                <option value=''>Any country</option>
                 {availableCountries.map((value) => (
                   <option value={value} key={value}>
                     {value}
@@ -4665,15 +5123,13 @@ function SearchPanel({ onActivitySelect }: SearchPanelProps) {
             </label>
 
             {canFilterRegion && (
-              <label className="search-field">
+              <label className='search-field'>
                 <span>{regionLabel}</span>
                 <select
                   value={region}
                   onChange={(event) => handleRegionChange(event.target.value)}
                 >
-                  <option value="">
-                    Any {regionLabel.toLowerCase()}
-                  </option>
+                  <option value=''>Any {regionLabel.toLowerCase()}</option>
                   {availableRegions.map((value) => (
                     <option value={value} key={value}>
                       {value}
@@ -4683,10 +5139,13 @@ function SearchPanel({ onActivitySelect }: SearchPanelProps) {
               </label>
             )}
 
-            <label className="search-field">
+            <label className='search-field'>
               <span>City</span>
-              <select value={city} onChange={(event) => setCity(event.target.value)}>
-                <option value="">Any city</option>
+              <select
+                value={city}
+                onChange={(event) => setCity(event.target.value)}
+              >
+                <option value=''>Any city</option>
                 {availableCities.map((value) => (
                   <option value={value} key={value}>
                     {value}
@@ -4695,41 +5154,45 @@ function SearchPanel({ onActivitySelect }: SearchPanelProps) {
               </select>
             </label>
 
-            <label className="search-field search-field-wide">
+            <label className='search-field search-field-wide'>
               <span>Keywords</span>
               <input
                 value={keywordQuery}
                 onChange={(event) => setKeywordQuery(event.target.value)}
-                placeholder="alpha, bravo, charlie"
+                placeholder='alpha, bravo, charlie'
               />
             </label>
 
-            <label className="search-field">
+            <label className='search-field'>
               <span>Sort by</span>
               <select
                 value={sortField}
-                onChange={(event) => setSortField(event.target.value as SearchSortField)}
+                onChange={(event) =>
+                  setSortField(event.target.value as SearchSortField)
+                }
               >
-                <option value="date">Date</option>
-                <option value="distance">Distance</option>
-                <option value="name">Name</option>
-                <option value="location">Location</option>
+                <option value='date'>Date</option>
+                <option value='distance'>Distance</option>
+                <option value='name'>Name</option>
+                <option value='location'>Location</option>
               </select>
             </label>
 
-            <label className="search-field">
+            <label className='search-field'>
               <span>Order</span>
               <select
                 value={sortDirection}
-                onChange={(event) => setSortDirection(event.target.value as SearchSortDirection)}
+                onChange={(event) =>
+                  setSortDirection(event.target.value as SearchSortDirection)
+                }
               >
-                <option value="desc">Descending</option>
-                <option value="asc">Ascending</option>
+                <option value='desc'>Descending</option>
+                <option value='asc'>Ascending</option>
               </select>
             </label>
           </div>
 
-          <div className="search-results-header">
+          <div className='search-results-header'>
             <span>
               {isLoading
                 ? 'Loading activities...'
@@ -4737,10 +5200,10 @@ function SearchPanel({ onActivitySelect }: SearchPanelProps) {
                     filteredActivities.length === 1 ? '' : 's'
                   }`}
             </span>
-            {error && <span className="search-error">{error}</span>}
+            {error && <span className='search-error'>{error}</span>}
           </div>
 
-          <div className="search-results" role="list">
+          <div className='search-results' role='list'>
             {filteredActivities.slice(0, 150).map((activity) => {
               const distance = formatKilometers(activity.corrected_distance);
               const date = formatActivityDateTime(activity.started_at);
@@ -4748,14 +5211,16 @@ function SearchPanel({ onActivitySelect }: SearchPanelProps) {
 
               return (
                 <button
-                  className="search-result"
-                  type="button"
-                  role="listitem"
+                  className='search-result'
+                  type='button'
+                  role='listitem'
                   key={activity.id}
                   onClick={() => onActivitySelect(activity)}
                 >
-                  <span className="search-result-name">{getActivityDisplayName(activity)}</span>
-                  <span className="search-result-meta">
+                  <span className='search-result-name'>
+                    {getActivityDisplayName(activity)}
+                  </span>
+                  <span className='search-result-meta'>
                     {date && <span>{date}</span>}
                     {distance && <span>{distance}</span>}
                     {location && <span>{location}</span>}
@@ -4765,7 +5230,9 @@ function SearchPanel({ onActivitySelect }: SearchPanelProps) {
             })}
 
             {!isLoading && filteredActivities.length === 0 && (
-              <p className="search-empty-state">No activities match those filters.</p>
+              <p className='search-empty-state'>
+                No activities match those filters.
+              </p>
             )}
           </div>
         </>
@@ -4784,8 +5251,11 @@ function App() {
     useState<SelectedProjectActivity | null>(null);
   const [activityPanelMode, setActivityPanelMode] =
     useState<ActivityPanelMode>('story');
-  const [allProjectActivities, setAllProjectActivities] = useState<ProjectActivity[]>([]);
-  const [selectedActivityAnimationKey, setSelectedActivityAnimationKey] = useState(0);
+  const [allProjectActivities, setAllProjectActivities] = useState<
+    ProjectActivity[]
+  >([]);
+  const [selectedActivityAnimationKey, setSelectedActivityAnimationKey] =
+    useState(0);
   const [mobileMode, setMobileMode] = useState<MobileMode>('project');
   const [showMapHandleHint, setShowMapHandleHint] = useState(true);
   const [mobileMapHeight, setMobileMapHeight] = useState(48);
@@ -4793,11 +5263,15 @@ function App() {
   const [mobileMapOpacity, setMobileMapOpacity] = useState(1);
   const [desktopContentTab, setDesktopContentTab] =
     useState<DesktopContentTab>('story');
-  const [mapFocusActivityId, setMapFocusActivityId] = useState<string | null>(null);
+  const [mapFocusActivityId, setMapFocusActivityId] = useState<string | null>(
+    null,
+  );
   const [mapFocusActivityKey, setMapFocusActivityKey] = useState(0);
-  const [mapProgressFocusActivityId, setMapProgressFocusActivityId] =
-    useState<string | null>(null);
-  const [mapProgressFocusActivityKey, setMapProgressFocusActivityKey] = useState(0);
+  const [mapProgressFocusActivityId, setMapProgressFocusActivityId] = useState<
+    string | null
+  >(null);
+  const [mapProgressFocusActivityKey, setMapProgressFocusActivityKey] =
+    useState(0);
   const [showLogoLightbox, setShowLogoLightbox] = useState(false);
   const [, setIsGlobeReady] = useState(false);
   const logoUrl = `${import.meta.env.BASE_URL}ProjectFarPoint.png`;
@@ -4818,7 +5292,7 @@ function App() {
     allProjectActivities.length > 0,
   );
   const selectedProgressPosition = selectedActivity
-    ? progressPositionsByActivityId.get(selectedActivity.id) ?? null
+    ? (progressPositionsByActivityId.get(selectedActivity.id) ?? null)
     : null;
 
   useEffect(() => {
@@ -4829,27 +5303,62 @@ function App() {
       return;
     }
 
-    supabase
-      .from('project_activities')
-      .select(projectActivitySelectColumns)
-      .then(({ data, error }) => {
-        if (isCancelled) {
-          return;
-        }
+    async function loadProgressActivities() {
+      if (!supabase) {
+        return;
+      }
 
-        if (error) {
-          console.error('Could not load progress activities.', error);
-          setAllProjectActivities([]);
-          return;
-        }
+      const progressActivitiesResult = await supabase
+        .from('project_activities')
+        .select(projectActivitySelectColumns);
+      let data = progressActivitiesResult.data as ProjectActivity[] | null;
+      let error: unknown = progressActivitiesResult.error;
 
-        setAllProjectActivities((data ?? []) as ProjectActivity[]);
-      });
+      if (isMissingProgressStoryColumnError(error)) {
+        const fallbackResult = await supabase
+          .from('project_activities')
+          .select(projectActivityBaseSelectColumns);
+
+        data = fallbackResult.data as ProjectActivity[] | null;
+        error = fallbackResult.error;
+      }
+
+      if (isCancelled) {
+        return;
+      }
+
+      if (error) {
+        console.error('Could not load progress activities.', error);
+        setAllProjectActivities([]);
+        return;
+      }
+
+      setAllProjectActivities((data ?? []) as ProjectActivity[]);
+    }
+
+    loadProgressActivities();
 
     return () => {
       isCancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!selectedActivity) {
+      return;
+    }
+
+    const refreshedActivity = allProjectActivities.find(
+      (activity) => activity.id === selectedActivity.id,
+    );
+
+    if (
+      refreshedActivity &&
+      refreshedActivity.progress_story !== selectedActivity.progress_story
+    ) {
+      setSelectedActivity(refreshedActivity);
+    }
+  }, [allProjectActivities, selectedActivity]);
 
   const applyMobileMapPreset = useCallback(
     (preset: typeof mobileMapStoryPreset | typeof mobileMapFocusPreset) => {
@@ -4863,33 +5372,40 @@ function App() {
   const toggleMobileMapPreset = useCallback(() => {
     const isFocusedMap = mobileMapHeight >= 58 && mobileMapOpacity > 0.85;
 
-    applyMobileMapPreset(isFocusedMap ? mobileMapStoryPreset : mobileMapFocusPreset);
+    applyMobileMapPreset(
+      isFocusedMap ? mobileMapStoryPreset : mobileMapFocusPreset,
+    );
   }, [applyMobileMapPreset, mobileMapHeight, mobileMapOpacity]);
 
-  const updateMobileMapFromPointer = useCallback((clientX: number, clientY: number) => {
-    const viewportWidth = Math.max(window.innerWidth, 1);
-    const viewportHeight = Math.max(window.innerHeight, 1);
-    const nextControlX = Math.min(
-      mobileMapControlMaxX,
-      Math.max(mobileMapControlMinX, (clientX / viewportWidth) * 100),
-    );
-    const nextHeight = Math.min(
-      76,
-      Math.max(28, ((viewportHeight - clientY) / viewportHeight) * 100),
-    );
-    const opacityProgress =
-      (nextControlX - mobileMapControlMinX) /
-      (mobileMapControlMaxX - mobileMapControlMinX);
-    const nextOpacity =
-      mobileMapOpacityMin +
-      opacityProgress * (mobileMapOpacityMax - mobileMapOpacityMin);
+  const updateMobileMapFromPointer = useCallback(
+    (clientX: number, clientY: number) => {
+      const viewportWidth = Math.max(window.innerWidth, 1);
+      const viewportHeight = Math.max(window.innerHeight, 1);
+      const nextControlX = Math.min(
+        mobileMapControlMaxX,
+        Math.max(mobileMapControlMinX, (clientX / viewportWidth) * 100),
+      );
+      const nextHeight = Math.min(
+        76,
+        Math.max(28, ((viewportHeight - clientY) / viewportHeight) * 100),
+      );
+      const opacityProgress =
+        (nextControlX - mobileMapControlMinX) /
+        (mobileMapControlMaxX - mobileMapControlMinX);
+      const nextOpacity =
+        mobileMapOpacityMin +
+        opacityProgress * (mobileMapOpacityMax - mobileMapOpacityMin);
 
-    setMobileMapHeight(nextHeight);
-    setMobileMapControlX(nextControlX);
-    setMobileMapOpacity(nextOpacity);
-  }, []);
+      setMobileMapHeight(nextHeight);
+      setMobileMapControlX(nextControlX);
+      setMobileMapOpacity(nextOpacity);
+    },
+    [],
+  );
 
-  function handleMobileMapControlPointerDown(event: React.PointerEvent<HTMLButtonElement>) {
+  function handleMobileMapControlPointerDown(
+    event: React.PointerEvent<HTMLButtonElement>,
+  ) {
     isDraggingMapControl.current = true;
     hasMovedMapControl.current = false;
     mapControlStart.current = {
@@ -4901,7 +5417,9 @@ function App() {
     updateMobileMapFromPointer(event.clientX, event.clientY);
   }
 
-  function handleMobileMapControlPointerMove(event: React.PointerEvent<HTMLButtonElement>) {
+  function handleMobileMapControlPointerMove(
+    event: React.PointerEvent<HTMLButtonElement>,
+  ) {
     if (!isDraggingMapControl.current) {
       return;
     }
@@ -4918,7 +5436,9 @@ function App() {
     updateMobileMapFromPointer(event.clientX, event.clientY);
   }
 
-  function handleMobileMapControlPointerUp(event: React.PointerEvent<HTMLButtonElement>) {
+  function handleMobileMapControlPointerUp(
+    event: React.PointerEvent<HTMLButtonElement>,
+  ) {
     isDraggingMapControl.current = false;
 
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
@@ -4942,43 +5462,52 @@ function App() {
     });
   }, []);
 
-  const handleActivitySelect = useCallback((activity: SelectedProjectActivity) => {
-    setSelectedActivity(activity);
-    setActivityPanelMode('story');
-    setSelectedActivityAnimationKey((currentKey) => currentKey + 1);
-    setMobileMode('project');
-    setDesktopContentTab('story');
-    window.requestAnimationFrame(() => {
-      if (window.matchMedia('(max-width: 980px)').matches) {
-        storyPanelRef.current?.scrollIntoView({
-          behavior: 'smooth',
-          block: 'start',
-        });
-      }
-    });
-  }, []);
-  const handleProgressActivitySelect = useCallback((activity: SelectedProjectActivity) => {
-    setSelectedActivity(activity);
-    setActivityPanelMode('progress');
-    setSelectedActivityAnimationKey((currentKey) => currentKey + 1);
-    setMobileMode('project');
-    setDesktopContentTab('story');
-    window.requestAnimationFrame(() => {
-      if (window.matchMedia('(max-width: 980px)').matches) {
-        storyPanelRef.current?.scrollIntoView({
-          behavior: 'smooth',
-          block: 'start',
-        });
-      }
-    });
-  }, []);
-  const handleSearchActivitySelect = useCallback((activity: ProjectActivity) => {
-    setSelectedActivity(activity);
-    setActivityPanelMode('story');
-    setSelectedActivityAnimationKey((currentKey) => currentKey + 1);
-    setMapFocusActivityId(activity.id);
-    setMapFocusActivityKey((currentKey) => currentKey + 1);
-  }, []);
+  const handleActivitySelect = useCallback(
+    (activity: SelectedProjectActivity) => {
+      setSelectedActivity(activity);
+      setActivityPanelMode('story');
+      setSelectedActivityAnimationKey((currentKey) => currentKey + 1);
+      setMobileMode('project');
+      setDesktopContentTab('story');
+      window.requestAnimationFrame(() => {
+        if (window.matchMedia('(max-width: 980px)').matches) {
+          storyPanelRef.current?.scrollIntoView({
+            behavior: 'smooth',
+            block: 'start',
+          });
+        }
+      });
+    },
+    [],
+  );
+  const handleProgressActivitySelect = useCallback(
+    (activity: SelectedProjectActivity) => {
+      setSelectedActivity(activity);
+      setActivityPanelMode('progress');
+      setSelectedActivityAnimationKey((currentKey) => currentKey + 1);
+      setMobileMode('project');
+      setDesktopContentTab('story');
+      window.requestAnimationFrame(() => {
+        if (window.matchMedia('(max-width: 980px)').matches) {
+          storyPanelRef.current?.scrollIntoView({
+            behavior: 'smooth',
+            block: 'start',
+          });
+        }
+      });
+    },
+    [],
+  );
+  const handleSearchActivitySelect = useCallback(
+    (activity: ProjectActivity) => {
+      setSelectedActivity(activity);
+      setActivityPanelMode('story');
+      setSelectedActivityAnimationKey((currentKey) => currentKey + 1);
+      setMapFocusActivityId(activity.id);
+      setMapFocusActivityKey((currentKey) => currentKey + 1);
+    },
+    [],
+  );
   const handleActivityFocus = useCallback((activityId: string) => {
     setActivityPanelMode('story');
     setMapFocusActivityId(activityId);
@@ -4993,151 +5522,157 @@ function App() {
     setSelectedActivity(null);
     setActivityPanelMode('story');
   }, []);
-  const handleProgressStorySaved = useCallback((activity: SelectedProjectActivity) => {
-    setSelectedActivity(activity);
-    setAllProjectActivities((currentActivities) =>
-      currentActivities.map((currentActivity) =>
-        currentActivity.id === activity.id
-          ? {
-            ...currentActivity,
-            progress_story: activity.progress_story,
-          }
-          : currentActivity,
-      ),
-    );
-  }, []);
+  const handleProgressStorySaved = useCallback(
+    (activity: SelectedProjectActivity) => {
+      setSelectedActivity(activity);
+      setAllProjectActivities((currentActivities) =>
+        currentActivities.map((currentActivity) =>
+          currentActivity.id === activity.id
+            ? {
+                ...currentActivity,
+                progress_story: activity.progress_story,
+              }
+            : currentActivity,
+        ),
+      );
+    },
+    [],
+  );
   const handleGlobeReadyChange = useCallback((isReady: boolean) => {
     setIsGlobeReady(isReady);
   }, []);
-  const handleDesktopContentTabChange = useCallback((nextTab: DesktopContentTab) => {
-    setDesktopContentTab(nextTab);
-  }, []);
+  const handleDesktopContentTabChange = useCallback(
+    (nextTab: DesktopContentTab) => {
+      setDesktopContentTab(nextTab);
+    },
+    [],
+  );
   const appStyle = {
     '--mobile-map-height': mobileMapHeight,
     '--mobile-map-control-x': mobileMapControlX,
     '--mobile-map-opacity': mobileMapOpacity,
   } as CSSProperties;
   const searchParams = new URLSearchParams(window.location.search);
-  const showAdminPage = searchParams.has('adminPage');
   const adminPage = searchParams.get('adminPage');
-
-  if (!showAdminPage) {
-    return (
-      <main className="coming-soon-page">
-        <h1>Coming Soon</h1>
-      </main>
-    );
-  }
 
   if (adminPage === 'addActivity') {
     return <AddActivityPage session={session} />;
   }
 
   return (
-    <main
-      className={`welcome-page mobile-mode-${mobileMode}`}
-      style={appStyle}
-    >
-      <div className="mobile-shell-header">
-        <div className="mobile-brand-heading">
+    <main className={`welcome-page mobile-mode-${mobileMode}`} style={appStyle}>
+      <div className='mobile-shell-header'>
+        <div className='mobile-brand-heading'>
           <button
-            className="brand-mark brand-mark-button"
-            type="button"
+            className='brand-mark brand-mark-button'
+            type='button'
             onClick={() => setShowLogoLightbox(true)}
-            aria-label="Open Project Far Point logo"
+            aria-label='Open Project Far Point logo'
           >
             <img
-              className="brand-art"
+              className='brand-art'
               src={logoUrl}
-              alt="Project FarPoint logo with planet Earth in space"
+              alt='Project FarPoint logo with planet Earth in space'
             />
           </button>
-          <div className="brand-title">
-            <p className="eyebrow">Welcome to Project Far Point</p>
-            <p className="mobile-brand-title">Project Far Point</p>
+          <div className='brand-title'>
+            <p className='mobile-brand-title'>Project Far Point</p>
+            <p className='brand-tagline'>New Zealand to Spain x 2</p>
           </div>
         </div>
-        <div className="mobile-nav-account">
+        <div className='mobile-nav-account'>
           <AuthPanel session={session} />
-        <button
-          className={mobileMode === 'donate' ? 'mobile-mode-active' : ''}
-          type="button"
-          onClick={() => handleMobileModeChange('donate')}
-        >
-          Donate
-        </button>
+          {SHOW_FUNDRAISER && (
+            <button
+              className={mobileMode === 'donate' ? 'mobile-mode-active' : ''}
+              type='button'
+              onClick={() => handleMobileModeChange('donate')}
+            >
+              Donate
+            </button>
+          )}
         </div>
       </div>
-      <nav className="mobile-mode-nav" aria-label="Mobile view">
+      <nav className='mobile-mode-nav' aria-label='Mobile view'>
         <button
           className={mobileMode === 'project' ? 'mobile-mode-active' : ''}
-          type="button"
+          type='button'
           onClick={() => handleMobileModeChange('project')}
         >
           Project Far Point
         </button>
         <button
           className={mobileMode === 'progress' ? 'mobile-mode-active' : ''}
-          type="button"
+          type='button'
           onClick={() => handleMobileModeChange('progress')}
         >
           Progress
         </button>
         <button
           className={mobileMode === 'search' ? 'mobile-mode-active' : ''}
-          type="button"
+          type='button'
           onClick={() => handleMobileModeChange('search')}
         >
           Search
         </button>
       </nav>
       <section
-        className="welcome-copy-panel"
+        className='welcome-copy-panel'
         ref={storyPanelRef}
-        aria-labelledby="welcome-title"
+        aria-labelledby='welcome-title'
       >
-        <header className="brand-header">
-          <div className="brand-heading">
+        <header className='brand-header'>
+          <div className='brand-heading'>
             <button
-              className="brand-mark brand-mark-button"
-              type="button"
+              className='brand-mark brand-mark-button'
+              type='button'
               onClick={() => setShowLogoLightbox(true)}
-              aria-label="Open Project Far Point logo"
+              aria-label='Open Project Far Point logo'
             >
               <img
-                className="brand-art"
+                className='brand-art'
                 src={logoUrl}
-                alt="Project FarPoint logo with planet Earth in space"
+                alt='Project FarPoint logo with planet Earth in space'
               />
             </button>
-            <div className="brand-title">
-              <p className="eyebrow">Welcome to Project Far Point</p>
-              <h1 id="welcome-title">Project Far Point</h1>
+            <div className='brand-title'>
+              <h1 id='welcome-title'>Project Far Point</h1>
+              <p className='brand-tagline'>New Zealand to Spain x 2</p>
             </div>
           </div>
           <AuthPanel session={session} />
         </header>
-        <div className="desktop-content-tabs" role="tablist" aria-label="Project content">
+        <div
+          className='desktop-content-tabs'
+          role='tablist'
+          aria-label='Project content'
+        >
           <button
-            className={desktopContentTab === 'story' ? 'desktop-content-tab-active' : ''}
-            type="button"
-            role="tab"
+            className={
+              desktopContentTab === 'story' ? 'desktop-content-tab-active' : ''
+            }
+            type='button'
+            role='tab'
             aria-selected={desktopContentTab === 'story'}
             onClick={() => handleDesktopContentTabChange('story')}
           >
             Story
           </button>
           <button
-            className={desktopContentTab === 'search' ? 'desktop-content-tab-active' : ''}
-            type="button"
-            role="tab"
+            className={
+              desktopContentTab === 'search' ? 'desktop-content-tab-active' : ''
+            }
+            type='button'
+            role='tab'
             aria-selected={desktopContentTab === 'search'}
             onClick={() => handleDesktopContentTabChange('search')}
           >
             Search
           </button>
         </div>
-        <article className={`intro${desktopContentTab === 'search' ? ' intro-hidden-desktop' : ''}`}>
+        <article
+          className={`intro${desktopContentTab === 'search' ? ' intro-hidden-desktop' : ''}`}
+        >
           {selectedActivity && activityPanelMode === 'progress' ? (
             <ProgressStory
               key={`${selectedActivity.id}-${selectedActivityAnimationKey}-progress`}
@@ -5160,88 +5695,156 @@ function App() {
               isArriving
             />
           ) : (
-            <div className="welcome-copy">
+            <div className='welcome-copy'>
+              <h2>OVERVIEW</h2>
               <p>
-                Project Far Point is a geo-blog documenting my attempt to
-                travel a cumulative distance equal to the circumference of the
-                Earth: 40,076 kilometers. Over the course of a decade or more,
-                thousands of walks, backpacking trips, kayak adventures,
-                ski tours, and snowshoe excursions will become the real-world
-                building blocks of two imagined journeys that together circle
-                the globe: <strong className="journey-voyager">Voyager</strong>{' '}
-                and the{' '}
-                <strong className="journey-far-point">Far Point Trail</strong>.
+                Project Far Point is a geo-blog documenting my multi-year goal
+                of walking a cumulative distance equal to the circumference of the
+                Earth: 40,076 kilometers. Over that time, thousands of
+                excursions will become the real-world steps for two imagined
+                journeys - <strong className='journey-voyager'>Voyager</strong>{' '}
+                and the
+                <strong className='journey-far-point'>
+                  {' '}
+                  Far Point Trail
+                </strong>{' '}
+                .  The virtual paths for Voyager and the Far Point Trail start in the Southern Alps of New Zealand midway along the 3000
+                km Te Araroa Trail; from that point, two great semi-circles traveling in exact opposite
+                directions wrap completely around Earth to the FAR POINT of the planet in Spain. The virtual paths reunite after 20,038 km each along the famed Camino
+                de Santiago at the exact antipode of the Te Araroa Trail starting point in New Zealand.
+              </p>
 
+              <p>
+                The real-world goal for <strong className='journey-voyager'>Voyager</strong>{' '} is to complete walks in all 50 US states, 12 Canadian provinces and territories, 24
+                countries, and 100 parks located throughout the world. With each
+                new adventure, Voyager's progress path will grow on the
+                globe, bringing it closer to its destination and creating a 
+                tapestry of stories, photos, and videos along the way.
               </p>
               <p>
-                Voyager begins high in the remote Southern Alps of New Zealand and
-                travels, <i>in imagination</i>, 20,038 kilometers through Australia, Asia, over the summit of Mount Everest,
-                and through Europe to its destination: the Cathedral of St. James in
-                Santiago de Compostela, Spain - the famed terminus of the Camino
-                de Santiago and the exact opposite side of the Earth - the antipode of its starting point.
+                The second part of the project, the                 <strong className='journey-far-point'>
+                  {' '}
+                  Far Point Trail
+                </strong>{' '}, is
+                Voyager's wild twin. The Far Point Trail
+                is a continuous wilderness trek linking some of North America's
+                most iconic long-distance trails, including Canada's Great
+                Divide Trail and the Trans Canada Trail, the Pacific Northwest
+                Trail, the Continental Divide Trail, the Arizona Trail, the
+                Pacific Crest Trail, and the Oregon and California Coast trails.
               </p>
               <p>
-                The reality behind Voyager is far less direct, but no less
-                meaningful. The intention of Voyager is to visit 100 parks located throughout 
-                the world and walk, kayak, raft,ski or snowshoe 100 kilometers in each. The parks are the places where the virtual
-                 Voyager's path intersects with the real world, and the activities are the steps that move it forward. With each new
-                  adventure, Voyager's progress path will grow on the globe, bringing it closer to its destination
-                   and creating a rich tapestry of stories, photos, and videos along the way.
-              </p>
-              <p>
-                The second half of the project, the Far Point Trail, is Voyager's
-                wild twin. It imagines an oceanic return voyage from the cathedral in Santiago de Compostela back
-                to the Southern Alps of New Zealand. Supporting that fictional
-                route is a very real 20,038-kilometer wilderness journey linking
-                some of North America's most iconic long-distance trails,
-                including Canada's Great Divide Trail and Trans Canada Trail, the
-                Pacific Northwest Trail, the Continental Divide Trail, the Arizona
-                Trail, the Pacific Crest Trail, and the Oregon and California
-                coastal trails.
-              </p>
-              <p>
-                Together, Voyager and the Far Point Trail will one day complete a full virtual
-                circumnavigation of the Earth. Explore the map by clicking on the routes and markers to learn more about the journeys and follow along as the progress paths grow with each new adventure.
-                You will find photos, videos, and stories from the adventures, as well as reflections on the experience of connecting with the world through travel and imagination.
+                With patience and endurance, Voyager and the Far Point Trail
+                will one day combine to complete a full virtual circumnavigation
+                of the Earth. You can explore the map and activities by clicking
+                on the routes and markers and
+                follow along as the progress paths grow with each new walk.
+                You will find photos, videos, and stories from the adventures,
+                as well as reflections on the experience of connecting with the
+                world through travel and imagination.
               </p>
               <p>
                 The destination may be years away, but the adventure begins with
-                the next step. I'm already planning a celebration in the courtyard
-                of St. James Cathedral in 2038! Until then, I invite you to follow
-                along and share in the journey.
+                the next step. I invite
+                you to follow along and share in the journey.
               </p>
+              <p><strong> River Madsen - November 2026</strong></p>
+              <div>
+                <h2>RULES</h2>
+                <ol>
+                  <li>
+                    Acceptable modes of travel for the purpose of distance tracking on Voyager and the Far
+                    Point Trail are limited to walking, hiking, or
+                    jogging/running only.
+                  </li>
+                  <li>
+                    For the Far Point Trail, travel is only permitted in one
+                    direction (from the start of the Great Divide Trail at
+                    Waterton Lake to the summit of Mt. Whitney), however the
+                    many segments of the Far Point Trail may be traveled in any
+                    order.
+                  </li>
+                  <li>
+                    For Voyager, out and back routes are allowed for the
+                    accumulation of distance.
+                  </li>
+                  <li>
+                    For both Voyager and the Far Point Trail, distance is not
+                    counted for repeated segments of the same route.
+                  </li>
+                  <li>
+                    While repeated walked segments are not credited for distance, they are tallied for accumation of "extra credit". Extra credit distance
+                    can be used on both Voyager and the Far Point Trail for rare circumstances where walking is not practical (such as channel crossings, and kayak and rafting sections of both Voyager and the Far Point Trail.)
+                  </li>
+                  <li>
+                    All activities should be documented in Strava for
+                    transparency and tracking purposes. There may be times when
+                    due to circumstances such as a low phone battery it is not
+                    possible to fully record an activity, but efforts should be made
+                    to maintain accurate records whenever feasible and when not
+                    possible, a detailed explanation should be provided.
+                  </li>
+                  <li>
+                    Provide at least one geo-tagged image per activity and a
+                    brief description of the activity.
+                  </li>
+                </ol>
+                <h4>Voyager Goals</h4>
+                <p>
+                  <ol>
+                    <li>
+                      Visit all 50 states and complete at least 100 km in each.
+                    </li>
+                    <li>
+                      Visit all 13 provinces and terriorties in Canada and
+                      complete at least 100 km in each.
+                    </li>
+                    <li>
+                      Visit 24 countries and complete at least 100 km in each.
+                    </li>
+                  </ol>
+                </p>
+                <h4>Far Point Trail</h4>
+              </div>
             </div>
           )}
         </article>
-        <div className={`desktop-search-content${desktopContentTab === 'story' ? ' desktop-search-content-hidden' : ''}`}>
+        <div
+          className={`desktop-search-content${desktopContentTab === 'story' ? ' desktop-search-content-hidden' : ''}`}
+        >
           <SearchPanel onActivitySelect={handleSearchActivitySelect} />
         </div>
-        <div className="mobile-mode-content mobile-progress-content">
+        <div className='mobile-mode-content mobile-progress-content'>
           <JourneySummary progress={animatedJourneyProgress} />
         </div>
-        <div className="mobile-mode-content mobile-donate-content">
-          <CharityPanel />
-        </div>
-        <div className="mobile-mode-content mobile-search-content">
+        {SHOW_FUNDRAISER && (
+          <div className='mobile-mode-content mobile-donate-content'>
+            <CharityPanel />
+          </div>
+        )}
+        <div className='mobile-mode-content mobile-search-content'>
           <SearchPanel onActivitySelect={handleSearchActivitySelect} />
         </div>
       </section>
-      <section className="experience-panel" aria-label="Project progress and map">
-        <div className="experience-top">
+      <section
+        className='experience-panel'
+        aria-label='Project progress and map'
+      >
+        <div className='experience-top'>
           <JourneySummary progress={animatedJourneyProgress} />
-          <CharityPanel />
+          {SHOW_FUNDRAISER && <CharityPanel />}
         </div>
-        <div className="globe-panel" aria-label="Interactive 3D globe">
+        <div className='globe-panel' aria-label='Interactive 3D globe'>
           <button
             className={`mobile-map-control${showMapHandleHint ? ' mobile-map-control-with-hint' : ''}`}
-            type="button"
-            aria-label="Drag to resize and fade the map"
+            type='button'
+            aria-label='Drag to resize and fade the map'
             onPointerDown={handleMobileMapControlPointerDown}
             onPointerMove={handleMobileMapControlPointerMove}
             onPointerUp={handleMobileMapControlPointerUp}
             onPointerCancel={handleMobileMapControlPointerUp}
           >
-            <span aria-hidden="true">Drag Me!</span>
+            <span aria-hidden='true'>Drag Me!</span>
           </button>
           <GlobeView
             session={session}
@@ -5259,27 +5862,27 @@ function App() {
       </section>
       {showLogoLightbox && (
         <div
-          className="route-story-lightbox logo-lightbox"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Project Far Point logo"
+          className='route-story-lightbox logo-lightbox'
+          role='dialog'
+          aria-modal='true'
+          aria-label='Project Far Point logo'
           onClick={() => setShowLogoLightbox(false)}
         >
           <button
-            className="route-story-lightbox-close"
-            type="button"
+            className='route-story-lightbox-close'
+            type='button'
             onClick={() => setShowLogoLightbox(false)}
-            aria-label="Close logo"
+            aria-label='Close logo'
           >
             Close
           </button>
           <figure
-            className="route-story-lightbox-figure logo-lightbox-figure"
+            className='route-story-lightbox-figure logo-lightbox-figure'
             onClick={(event) => event.stopPropagation()}
           >
             <img
               src={logoUrl}
-              alt="Project FarPoint logo with planet Earth in space"
+              alt='Project FarPoint logo with planet Earth in space'
             />
           </figure>
         </div>
@@ -5290,6 +5893,6 @@ function App() {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    {window.location.pathname.replace(/\/$/, '') === '/offline' ? <OfflinePreview /> : <App />}
   </StrictMode>,
 );

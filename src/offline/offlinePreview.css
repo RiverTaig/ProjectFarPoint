@@ -1,0 +1,33 @@
+.offline-preview { max-width: 1100px; margin: 0 auto; padding: 28px 20px 64px; color: #f8f6ef; }
+.offline-preview a { color: #33c6ff; }
+.offline-preview h1 { margin-bottom: 12px; }
+.offline-preview p { line-height: 1.6; }
+.offline-preview form { display: grid; gap: 12px; margin: 24px 0; }
+.offline-preview textarea { width: 100%; padding: 12px; background: #101d2d; color: #fff; border: 1px solid #65778b; border-radius: 8px; font: inherit; overflow-wrap: anywhere; }
+.offline-preview input { display: block; width: min(100%, 360px); padding: 12px; margin-top: 8px; background: #101d2d; color: #fff; border: 1px solid #65778b; border-radius: 8px; font: inherit; }
+.offline-submit { border-top: 1px solid #65778b; padding-top: 16px; margin-top: 28px; }
+.offline-submission-result { margin-top: 20px; }
+.offline-submit > label { display: block; margin-top: 20px; margin-bottom: 8px; }
+.offline-submit > textarea { margin-bottom: 8px; }
+.offline-image-editor { min-width: 0; padding: 16px; margin: 16px 0; border: 1px solid #65778b; border-radius: 8px; }
+.offline-image-editor legend { overflow-wrap: anywhere; }
+.offline-image-editor img, .offline-saved-photos img { width: 150px; height: 110px; object-fit: cover; border-radius: 6px; }
+.offline-image-editor label { display: block; margin: 12px 0; }
+.offline-image-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+.offline-saved-photos figure { margin: 16px 0; }
+.offline-saved-photos figcaption { margin: 8px 0; overflow-wrap: anywhere; }
+.offline-preview [aria-disabled="true"] { opacity: .5; cursor: wait; }
+.offline-preview button { justify-self: start; padding: 12px 18px; border: 0; border-radius: 8px; background: #33c6ff; color: #05111b; font: inherit; font-weight: 700; cursor: pointer; }
+.offline-preview button:disabled { opacity: .5; cursor: wait; }
+.offline-preview :focus-visible { outline: 3px solid #ffdc46; outline-offset: 3px; }
+.offline-error { padding: 16px; border: 1px solid #ff988b; background: #391b22; border-radius: 8px; }
+.offline-note { color: #afbecf; font-size: .9rem; }
+.offline-result { border-top: 1px solid #65778b; padding-top: 16px; }
+.offline-map { height: 520px; width: 100%; background: #101d2d; border-radius: 10px; overflow: hidden; }
+.offline-table-wrap { overflow-x: auto; margin: 20px 0; }
+.offline-preview table { width: 100%; border-collapse: collapse; text-align: left; }
+.offline-preview th, .offline-preview td { padding: 10px; border-bottom: 1px solid #344354; white-space: nowrap; }
+.offline-preview details { margin-top: 24px; }
+.offline-preview summary { cursor: pointer; }
+.offline-preview pre { background: #101d2d; padding: 16px; overflow: auto; }
+@media (max-width: 600px) { .offline-preview { padding: 20px 12px 40px; } .offline-map { height: 400px; } }

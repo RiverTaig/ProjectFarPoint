@@ -1,0 +1,48 @@
+Te Araroa geometry inspection - 2026-11-15
+
+Source: public/TeAraroaTrail_2026_27.geojson
+Size: 1,109,400 bytes; 466 sections; 28,027 vertices.
+Exact endpoint connections produce seven nonbranching chains.
+Section array order is not hiking order. Endpoint-only analysis does not
+establish whether interior crossings are junctions or whether transfers are
+walkable; transport modes are not identified in this GeoJSON.
+
+Chains sorted approximately north to south (coordinates longitude,latitude):
+1. 76 sections; endpoints (172.677591498303, -34.426698783031185) -> (174.49740255615455, -35.82653259462522)
+   Straight-line gap to next chain: 1.105 km (not hiking distance).
+2. 40 sections; endpoints (174.4904837264464, -35.83474094480809) -> (174.7955768961867, -36.83325271421048)
+   Straight-line gap to next chain: 2.873 km (not hiking distance).
+3. 204 sections; endpoints (174.76554154769408, -36.84271502558059) -> (174.77087570163036, -41.34398588425596)
+   Straight-line gap to next chain: 52.679 km (not hiking distance).
+4. 53 sections; endpoints (174.23525241432367, -41.09473748057099) -> (171.52835723314118, -43.36388350102406)
+   Straight-line gap to next chain: 12.610 km (not hiking distance).
+5. 3 sections; endpoints (171.38524838053615, -43.31885908098631) -> (170.9536820999356, -43.577229801336905)
+   Straight-line gap to next chain: 6.962 km (not hiking distance).
+6. 42 sections; endpoints (170.8947579038828, -43.62305002341263) -> (168.65944863928962, -45.03218261646992)
+   Straight-line gap to next chain: 26.506 km (not hiking distance).
+7. 48 sections; endpoints (168.35864084667955, -44.92474118011804) -> (168.35724518812154, -46.613461641916054)
+
+Endpoint clustering at 1 m or 10 m leaves the same seven components.
+The 100 m user snapping tolerance must NOT be used to merge trail topology.
+Within-section vertex spacing reaches approximately 5.842 km; long edges
+are review candidates, not proof of a transfer or missing geometry.
+
+User verification: River confirmed the longest edge is a valid, very straight
+road section of Te Araroa. Preserve it as connected trail geometry and include
+its distance normally; do not split or reject it merely due to vertex spacing.
+Section 46, consecutive vertices (latitude, longitude):
+ -40.240247993049344, 175.58163709711323
+ -40.279741149597726, 175.62704842413225
+This confirmation applies to this edge; other long edges are not individually
+verified by this confirmation.
+
+Design decisions:
+- Snap start/end to nearest segment within 100 m, interpolating within edges.
+- Reject endpoints over tolerance with readable distance information.
+- Reject selections spanning disconnected chains; do not bridge or credit gaps.
+- Submit separate activities on either side of a transfer.
+- Retain raw immutable GeoJSON and derive connected chains with stable IDs.
+- Store trail registry and versioned GeoJSON in Supabase; about 1.1 MB is
+  a reasonable initial table-based asset, loaded once per processing request.
+- Preserve attribution/license and publish via SQL/import scripts initially.
+- Database SQL and import scripts belong to step 3 and are not implemented yet.
