@@ -2212,6 +2212,34 @@ function GlobeView({
         longitude: -106.04263,
         latitude: 39.539280000000005,
       },
+      {
+        name: 'Continental Divide Trail New Mexico',
+        label: 'Continental Divide Trail\nNew Mexico',
+        longitude: -108.14143992505149,
+        latitude: 34.302856733596315,
+      },
+      {
+        name: 'Arizona Trail',
+        longitude: -111.44056,
+        latitude: 34.37053,
+      },
+      {
+        name: 'Colorado River',
+        longitude: -113.92269330099536,
+        latitude: 36.098443338974654,
+      },
+      {
+        name: 'Pacific Crest Trail California',
+        label: 'Pacific Crest Trail\nCalifornia',
+        longitude: -120.03997000000001,
+        latitude: 38.82302,
+      },
+      {
+        name: 'Pacific Crest Trail Oregon',
+        label: 'Pacific Crest Trail\nOregon',
+        longitude: -122.15312000000002,
+        latitude: 42.907140000000005,
+      },
     ];
     for (const landmark of trailLandmarks) {
       const landmarkLayer = landmark.flag
