@@ -1,7 +1,7 @@
 // Isolated PostgreSQL/PostGIS tests. Installs no schema in remote Supabase.
 // Dependencies may be installed separately from the app; see OFFLINE_STEP5.md.
 import { createRequire } from 'node:module';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import assert from 'node:assert/strict';
@@ -30,11 +30,11 @@ try {
     create table storage.objects (id uuid primary key,name text,bucket_id text);
     alter table storage.objects enable row level security;
     create function storage.foldername(path text) returns text[] language sql immutable as $$select string_to_array(path,'/')$$;
-    create table auth.users (id uuid primary key);
+    create table auth.users (id uuid primary key,email text,email_confirmed_at timestamptz);
     create function auth.uid() returns uuid language sql stable as
       $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
     grant usage on schema auth,extensions to anon,authenticated,service_role;
-    insert into auth.users values ('${owner}');
+    insert into auth.users(id,email,email_confirmed_at) values ('${owner}','rivermadsen23@gmail.com',now());
   `);
   for (const name of [
     '20260604195000_strava_activity_import.sql',
@@ -48,6 +48,7 @@ try {
     '20261115130000_offline_activity_processing.sql',
     '20261116120000_offline_activity_content.sql',
     '20261116130000_offline_request_delete_with_activity.sql',
+    '20261119120000_owner_trail_import.sql',
   ]) await pg.exec(sqlFile(name));
   // Supabase supplies existing table privileges through its default grants.
   await pg.exec('grant all on public.project_activities,public.project_activity_images to service_role;');
@@ -168,5 +169,72 @@ try {
   assert.equal(await scalar('select count(*)::integer as result from public.offline_activity_requests where result_activity_id=$1',[fp1.activityId]),0);
   assert.equal(await scalar('select count(*)::integer as result from public.project_activities where id=$1',[fp1.activityId]),0);
   check('owner deletion also cascades without granting direct request deletion permissions');
+
+  const fptDirectory = new URL('supabase/imports/fpt1-1/', root);
+  const fptSql = readdirSync(fptDirectory).filter((name) => name.endsWith('.sql')).sort();
+  for (let replay = 0; replay < 2; replay++) {
+    for (const name of fptSql) await pg.exec(readFileSync(new URL(name, fptDirectory), 'utf8'));
+  }
+  assert.equal(await scalar("select count(*)::integer as result from public.trail_versions v join public.trails t on t.id=v.trail_id where t.code='FPT1'"), 1);
+  check('actual FPT1 chunk import and replay preserve a single immutable version');
+  await pg.exec('set role anon;');
+  const publishedFpt = (await pg.query("select t.id,t.timezone,v.geojson from public.trails t join public.trail_versions v on v.id=t.current_version_id where t.code='FPT1'")).rows[0];
+  assert.equal(publishedFpt.timezone, 'America/Edmonton');
+  await pg.exec('reset role; set role service_role;');
+  const fptPoints = publishedFpt.geojson.geometry.coordinates[0];
+  const fptStart = fptPoints[0], fptEnd = fptPoints[100];
+  const fptSection = extractTrailSection(buildTrailIndex(publishedFpt.geojson), fptStart, fptEnd);
+  const fptPrepare = (date) => rpc('pfp_prepare_offline_request', [owner, publishedFpt.id, 'Far Point Trail', date,
+    resolveLocalDateTime(date, publishedFpt.timezone), ...fptStart, ...fptEnd]);
+  const fptClaim = await fptPrepare('20260715T0800');
+  const fptDone = await complete(fptClaim, JSON.stringify(fptSection.geometry));
+  assert.equal(fptDone.appliesTo, 'Far Point Trail');
+  assert.ok(fptDone.creditedKilometers > 0);
+  await rpc('pfp_save_offline_content', [fptClaim.request.id, owner, 'FPT day one.\n\n{Image name="border"}', null]);
+  const fptImage = { name: 'border', storage_path: `${fptDone.activityId}/offline/border-${'c'.repeat(64)}.jpg`,
+    caption: 'US border', content_type: 'image/jpeg', size_bytes: 1234, sort_order: 0 };
+  await rpc('pfp_save_offline_content', [fptClaim.request.id, owner, null, JSON.stringify(fptImage)]);
+  assert.equal(await scalar('select pfp_type as result from public.project_activities where id=$1', [fptDone.activityId]), 'Far Point Trail');
+  assert.match(await scalar('select text_description as result from public.project_activities where id=$1', [fptDone.activityId]), /FPT day one/);
+  assert.equal(await scalar('select count(*)::integer as result from public.project_activity_images where activity_id=$1', [fptDone.activityId]), 1);
+  assert.equal((await fptPrepare('20260715T0800')).result.activityId, fptDone.activityId);
+  const fptRepeat = await complete(await fptPrepare('20260716T0800'), JSON.stringify(fptSection.geometry));
+  assert.equal(fptRepeat.creditedKilometers, 0);
+  await pg.exec('reset role;');
+  check('published FPT geometry is public; offline FPT credit, text/images, retries and repeated-distance exclusion work');
+  const fptFeature = publishedFpt.geojson;
+  const importTrail = (feature=fptFeature,version='1',filename='FPT_1.gpx',timezone='America/Edmonton') =>
+    rpc('pfp_import_trail_gpx',[filename,version,timezone,JSON.stringify(feature)]);
+  await pg.exec('set role anon;');
+  await assert.rejects(importTrail(),/permission denied/);
+  await pg.exec('reset role;');
+  const otherOwner='22222222-2222-4222-8222-222222222222';
+  await pg.query('insert into auth.users(id,email,email_confirmed_at) values ($1,$2,now())',[otherOwner,'other@example.com']);
+  await pg.query("select set_config('request.jwt.claim.sub',$1,false)",[otherOwner]);
+  await pg.exec('set role authenticated;');
+  await assert.rejects(importTrail(),/Only the Project Far Point owner/);
+  await pg.exec('reset role;');
+  await pg.query("select set_config('request.jwt.claim.sub',$1,false)",[owner]);
+  await pg.exec('set role authenticated;');
+  const importedAgain=await importTrail();
+  assert.equal(importedAgain.status,'already_imported');
+  assert.equal(importedAgain.current,true);
+  assert.equal(importedAgain.vertices,5149);
+  await assert.rejects(importTrail({...fptFeature,properties:{...fptFeature.properties,name:'changed'}}),/different geometry/);
+  await assert.rejects(importTrail(fptFeature,'1','FPT_1.gpx','UTC'),/timezone differs/);
+  await assert.rejects(importTrail({...fptFeature,geometry:{type:'MultiLineString',coordinates:[[[999,49],[0,50]]]}}),/WGS84/);
+  const revised=await importTrail({...fptFeature,properties:{...fptFeature.properties,description:'Revision'}},'2');
+  assert.equal(revised.status,'imported'); assert.equal(revised.current,true);
+  assert.equal((await importTrail()).current,false);
+  await pg.exec('reset role;');
+  assert.equal(await scalar("select v.version as result from public.trails t join public.trail_versions v on v.id=t.current_version_id where t.code='FPT1'"),'2');
+  const secondFeature=JSON.parse(readFileSync(new URL('supabase/imports/fpt2-1/geometry.geojson',root),'utf8'));
+  await pg.exec('set role authenticated;');
+  assert.equal((await importTrail(secondFeature,'1','FPT_2.gpx')).status,'imported');
+  await pg.exec('reset role;');
+  const fpt2Dir=new URL('supabase/imports/fpt2-1/',root);
+  for(const file of readdirSync(fpt2Dir).filter(name=>name.endsWith('.sql')).sort()) await pg.exec(readFileSync(new URL(file,fpt2Dir),'utf8'));
+  assert.equal(await scalar("select count(*)::integer as result from public.trail_versions v join public.trails t on t.id=v.trail_id where t.code='FPT2'"),1);
+  check('owner-only GPX import: anonymous/non-owner rejection, Python/browser replay compatibility, validation and revision publication');
   console.log('All isolated PostgreSQL/PostGIS checks passed. No remote database accessed.');
 } finally { await pg.close(); }

@@ -14,7 +14,7 @@ export function readOfflineLink(value: string, base = 'https://projectfarpoint.c
 export function offlineSubmissionBody(value: string, password: string) {
   const link = new URL(value);
   if (link.searchParams.get('preview') === '1') throw new Error('Example links are preview only. Use a real hike link to submit.');
-  parseOfflineUrl(value);
+  parseOfflineUrl(value, { code: link.searchParams.get('t') ?? '', timezone: 'UTC' });
   if (!password) throw new Error('Enter the submission password.');
   return { ...Object.fromEntries(['t', 'p', 'dt', 's', 'e'].map((key) => [key, link.searchParams.get(key)!])), pw: password };
 }

@@ -15,12 +15,13 @@ import type { SubmissionResult } from './offlineClient';
 import OfflineImageEditor from './OfflineImageEditor';
 import { appendMissingImageReferences, offlineContentRequest, validateImageDrafts } from './offlineContentClient';
 import type { ImageDraft, SavedPhoto } from './offlineContentClient';
+import { loadRegisteredTrail } from '../trailCatalog';
+import type { TrailGeometry } from '../trailCatalog';
 
 type Preview = { request: ReturnType<typeof parseOfflineUrl>; section: ReturnType<typeof extractTrailSection> };
-const asset = `${import.meta.env.BASE_URL}TeAraroaTrail_2026_27.geojson`;
 const pointText = (p: Coordinate) => `${p[0].toFixed(6)}, ${p[1].toFixed(6)}`;
 
-function TrailMap({ preview }: { preview: Preview | null }) {
+function TrailMap({ preview, trail }: { preview: Preview | null; trail: TrailGeometry }) {
   const node = useRef<HTMLDivElement>(null);
   const viewRef = useRef<MapView | null>(null);
   const graphicsRef = useRef<GraphicsLayer | null>(null);
@@ -29,14 +30,15 @@ function TrailMap({ preview }: { preview: Preview | null }) {
   const [mapError, setMapError] = useState('');
   useEffect(() => {
     let disposed = false;
+    const asset = URL.createObjectURL(new Blob([JSON.stringify(trail.geojson)], { type: 'application/geo+json' }));
     // React StrictMode cleans up its first effect immediately. Avoid starting
     // network work for that discarded view, which ArcGIS reports as aborts.
     queueMicrotask(() => {
       if (disposed || !node.current) return;
       const graphics = new GraphicsLayer();
       const map = new Map({ basemap: 'hybrid', layers: [new GeoJSONLayer({
-        url: asset, title: 'Te Araroa reference trail', popupEnabled: false,
-        renderer: { type: 'simple', symbol: { type: 'simple-line', color: [220, 220, 220, 0.6], width: 2 } },
+        url: asset, title: trail.name, copyright: `${trail.attribution} — ${trail.license}`, popupEnabled: false,
+        renderer: { type: 'simple', symbol: { type: 'simple-line', color: [220, 204, 128, 0.75], width: 2 } },
       }), graphics] });
       const view = new MapView({ container: node.current, map, constraints: { snapToZoom: false } });
       viewRef.current = view; graphicsRef.current = graphics;
@@ -44,8 +46,8 @@ function TrailMap({ preview }: { preview: Preview | null }) {
         if (!disposed) setMapError(`Map unavailable: ${error instanceof Error ? error.message : 'could not load basemap'}. Extraction results are still available.`);
       });
     });
-    return () => { disposed = true; viewRef.current?.destroy(); viewRef.current = null; graphicsRef.current = null; };
-  }, []);
+    return () => { disposed = true; viewRef.current?.destroy(); viewRef.current = null; graphicsRef.current = null; URL.revokeObjectURL(asset); };
+  }, [trail]);
   useEffect(() => {
     const graphics = graphicsRef.current;
     const view = viewRef.current;
@@ -97,10 +99,12 @@ export default function OfflinePreview() {
   const [retryAt, setRetryAt] = useState(0);
   const [retryReady, setRetryReady] = useState(true);
   const [index, setIndex] = useState<TrailIndex | null>(null);
+  const [registeredTrail, setRegisteredTrail] = useState<TrailGeometry | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [error, setError] = useState('');
   const [loadError, setLoadError] = useState('');
-  const initialUrl = useRef(initialOfflineLink?.url ?? window.location.href);
+  let selectedTrailCode = 'TA';
+  try { selectedTrailCode = new URL(url, window.location.origin).searchParams.get('t') || 'TA'; } catch { /* Validated on preview. */ }
   const resultHeading = useRef<HTMLHeadingElement>(null);
   let isExample = false;
   try { isExample = new URL(url, window.location.origin).searchParams.get('preview') === '1'; } catch { /* Invalid pasted URLs are handled by preview validation. */ }
@@ -195,11 +199,12 @@ export default function OfflinePreview() {
     }
   }
 
-  function extract(value: string, trail: TrailIndex) {
+  function extract(value: string, trail: TrailIndex, registration = registeredTrail) {
     setPreview(null); setError('');
     try {
-      const request = parseOfflineUrl(value);
-      const section = extractTrailSection(trail, request.start, request.end);
+      if (!registration) throw new Error('Wait for the trail to load.');
+      const request = parseOfflineUrl(value, registration);
+      const section = extractTrailSection(trail, request.start, request.end, Number(registration.snap_tolerance_meters));
       setPreview({ request, section });
     } catch (failure) {
       setError(failure instanceof TrailError ? `${failure.code}: ${failure.message}`
@@ -207,28 +212,33 @@ export default function OfflinePreview() {
     }
   }
   useEffect(() => {
-    const controller = new AbortController();
-    fetch(asset, { signal: controller.signal }).then(async (response) => {
-      if (!response.ok) throw new Error(`Trail load failed (${response.status}).`);
-      return response.json();
-    }).then((feature: unknown) => {
-      if (controller.signal.aborted) return;
-      const trail = buildTrailIndex(feature);
+    let disposed = false;
+    setIndex(null); setRegisteredTrail(null); setPreview(null); setLoadError(''); setError('');
+    loadRegisteredTrail(selectedTrailCode).then((registration) => {
+      if (disposed) return;
+      const trail = buildTrailIndex(registration.geojson);
+      setRegisteredTrail(registration);
       setIndex(trail);
-      if (new URL(initialUrl.current).searchParams.has('t')) extract(initialUrl.current, trail);
     }).catch((failure: unknown) => {
-      if (!controller.signal.aborted) setLoadError(failure instanceof Error ? failure.message : 'Could not load trail.');
+      if (!disposed) setLoadError(failure instanceof Error ? failure.message : 'Could not load trail.');
     });
-    return () => controller.abort();
-  }, []);
+    return () => { disposed = true; };
+  }, [selectedTrailCode]);
+
+  useEffect(() => {
+    if (index && registeredTrail && registeredTrail.code === selectedTrailCode
+      && new URL(url, window.location.origin).searchParams.has('t')) {
+      extract(url, index, registeredTrail);
+    }
+  }, [index, registeredTrail]);
 
   function download() {
-    if (!preview) return;
+    if (!preview || !registeredTrail) return;
     const file = { type: 'Feature', properties: {
-      trail: 'TA', version: '2026-27', appliesTo: preview.request.appliesTo,
+      trail: registeredTrail.code, version: registeredTrail.version, appliesTo: preview.request.appliesTo,
       localDateTime: preview.request.localDateTime, timezone: preview.request.timezone,
       distanceMeters: preview.section.distanceMeters,
-      attribution: 'Te Araroa Trust, 2026', license: 'Creative Commons 4.0 New Zealand',
+      attribution: registeredTrail.attribution, license: registeredTrail.license,
     }, geometry: preview.section.geometry };
     const href = URL.createObjectURL(new Blob([JSON.stringify(file, null, 2)], { type: 'application/geo+json' }));
     const link = document.createElement('a'); link.href = href; link.download = 'offline-trail-preview.geojson'; link.click();
@@ -255,7 +265,7 @@ export default function OfflinePreview() {
     </details>
     {loadError && <p className="offline-error" role="alert">{loadError}</p>}
     {error && <p className="offline-error" role="alert">{error}</p>}
-    {index && <p className="offline-note">Te Araroa 2026–27 · Pacific/Auckland · {index.chains.length} connected chains · 100 m snapping limit</p>}
+    {index && registeredTrail && <p className="offline-note">{registeredTrail.name} · {registeredTrail.timezone} · {index.chains.length} connected chains · {registeredTrail.snap_tolerance_meters} m snapping limit</p>}
     {preview && <>
       <section className="offline-result" aria-label="Extraction result">
         <h2>{(preview.section.distanceMeters / 1000).toFixed(2)} km · {preview.request.appliesTo}</h2>
@@ -263,7 +273,7 @@ export default function OfflinePreview() {
         <p>This is a preview. The server uses the registered trail to calculate the final distance and progress credit when you submit.</p>
       </section>
     </>}
-    {index && <TrailMap preview={preview} />}
+    {index && registeredTrail && <TrailMap key={registeredTrail.current_version_id} preview={preview} trail={registeredTrail} />}
     {preview && <section className="offline-result-details">
         <p>Colored circle: snapped start · diamond: snapped end · white crosses: supplied positions.</p>
         <div className="offline-table-wrap"><table><thead><tr><th>Endpoint</th><th>Supplied longitude, latitude</th><th>Snapped longitude, latitude</th><th>Snap distance</th></tr></thead>

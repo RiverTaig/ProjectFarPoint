@@ -1,5 +1,7 @@
 Offline satellite-message activity plan
 
+River deferred steps 8-10 for now. Do not begin that work until requested.
+
 Deletion reference fix:
  - Completed requests remain while their activities exist for history and
    duplicate protection. They should not block intentional activity deletion.

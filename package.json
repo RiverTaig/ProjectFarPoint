@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "test:offline": "node --experimental-strip-types --test scripts/test-trail-extraction.mjs scripts/test-offline-submission.mjs scripts/test-offline-client.mjs scripts/test-offline-content.mjs",
+    "test:offline": "node --experimental-strip-types --test scripts/test-trail-extraction.mjs scripts/test-offline-submission.mjs scripts/test-offline-client.mjs scripts/test-offline-content.mjs scripts/test-fpt.mjs",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview"

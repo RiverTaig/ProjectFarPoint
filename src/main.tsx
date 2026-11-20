@@ -28,6 +28,8 @@ import type { Session } from '@supabase/supabase-js';
 import { supabase } from './supabaseClient';
 import './styles.css';
 import OfflinePreview from './offline/OfflinePreview';
+import ImportTrailPage from './ImportTrailPage';
+import { listFarPointTrails, loadTrailGeometry } from './trailCatalog';
 
 type LatLon = {
   latitude: number;
@@ -235,9 +237,8 @@ const voyagerStart: LatLon = {
 };
 
 const voyagerWaypoint: LatLon = {
-  latitude: 36.5785,
-  longitude: -118.2923
-,
+  latitude: 18.475473,
+  longitude: -66.263427,
 };
 
 const farPointTrailWaypoint: LatLon = {
@@ -1589,6 +1590,9 @@ function GlobeView({
 }: GlobeViewProps) {
   const sceneNode = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<SceneView | null>(null);
+  const testActivityButtonRef = useRef<HTMLButtonElement | null>(null);
+  const ownerAccessRef = useRef(false);
+  const isOwner = isProjectOwner(session);
   const importedActivityGraphics = useRef(
     new globalThis.Map<string, Graphic>(),
   );
@@ -1611,6 +1615,22 @@ function GlobeView({
   const [testGeneratorStatus, setTestGeneratorStatus] = useState('');
   const [testGeneratorError, setTestGeneratorError] = useState('');
   const loadingLogoUrl = `${import.meta.env.BASE_URL}ProjectFarPointLoader.png`;
+
+  // Session recovery on tab focus creates fresh session objects. Update only
+  // account controls so the SceneView, camera and loaded layers stay intact.
+  useEffect(() => {
+    ownerAccessRef.current = isOwner;
+    const view = viewRef.current;
+    const button = testActivityButtonRef.current;
+    if (view && button) {
+      if (isOwner) view.ui.add(button, 'top-right');
+      else view.ui.remove(button);
+    }
+    if (!isOwner) {
+      setTestGeneratorStatus('');
+      setTestGeneratorError('');
+    }
+  }, [isOwner]);
 
   useEffect(() => {
     const previousGraphic = selectedActivityGraphic.current;
@@ -1836,12 +1856,61 @@ function GlobeView({
         type: 'simple',
         symbol: {
           type: 'simple-line',
-          color: [220, 220, 220, 1],
-          width: 3,
+          color: [220, 204, 128, 0.95],
+          width: '3px',
         },
       },
     });
     map.add(teAraroaTrailLayer);
+    const farPointTrailUrls: string[] = [];
+    // Bound concurrency as the catalogue grows beyond 100 GPX segments.
+    void (async () => {
+      const trails = await listFarPointTrails();
+      for (
+        let offset = 0;
+        offset < trails.length && !isDestroyed;
+        offset += 4
+      ) {
+        await Promise.all(
+          trails.slice(offset, offset + 4).map(async (trail) => {
+            try {
+              const geometry = await loadTrailGeometry(trail);
+              if (isDestroyed) return;
+              const url = URL.createObjectURL(
+                new Blob([JSON.stringify(geometry.geojson)], {
+                  type: 'application/geo+json',
+                }),
+              );
+              farPointTrailUrls.push(url);
+              map.add(
+                new GeoJSONLayer({
+                  title: trail.name,
+                  url,
+                  copyright: `${geometry.attribution} — ${geometry.license}`,
+                  popupEnabled: false,
+                  elevationInfo: { mode: 'on-the-ground' },
+                  renderer: {
+                    type: 'simple',
+                    symbol: {
+                      type: 'simple-line',
+                      color: [220, 204, 128, 0.95],
+                      width: '3px',
+                    },
+                  },
+                }),
+                1,
+              );
+            } catch (error) {
+              if (!isDestroyed)
+                console.error(`Could not display ${trail.code}`, error);
+            }
+          }),
+        );
+      }
+    })().catch((error: unknown) => {
+      if (!isDestroyed)
+        console.error('Could not load Far Point Trail catalogue', error);
+    });
     const voyagerRouteLayer = new GraphicsLayer({
       title: 'Project Far Point routes',
       elevationInfo: {
@@ -2086,6 +2155,117 @@ function GlobeView({
     voyagerRouteLayer.add(calgaryMarker);
     voyagerRouteLayer.add(calgaryLabel);
     map.add(voyagerRouteLayer);
+    const farPointStartLandmark = new GraphicsLayer({
+      title: 'Far Point Trail start',
+      minScale: 40_000_000,
+      elevationInfo: { mode: 'on-the-ground' },
+    });
+    const farPointLandmarks = new GraphicsLayer({
+      title: 'Far Point Trail regional landmarks',
+      minScale: 5_000_000,
+      elevationInfo: { mode: 'on-the-ground' },
+    });
+    const startFlagSvg =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 36"><path d="M16 34V3" stroke="#020611" stroke-width="5" stroke-linecap="round"/><path d="M16 34V3" stroke="#d7e4bc" stroke-width="2" stroke-linecap="round"/><path d="M17 3h13l-4 6 4 6H17Z" fill="#8fbc3b" stroke="#24340d" stroke-width="1.5" stroke-linejoin="round"/></svg>';
+    const trailLandmarks = [
+      {
+        name: 'Far Point Trail',
+        longitude: -113.90596000000001,
+        latitude: 48.999,
+        flag: true,
+      },
+      {
+        name: 'Great Divide Trail',
+        longitude: -116.48957000000001,
+        latitude: 51.395030000000006,
+      },
+      {
+        name: 'Upper Columbia River',
+        longitude: -119.17413,
+        latitude: 52.78248000000001,
+      },
+      {
+        name: 'Trans Canada Trail',
+        longitude: -118.68026,
+        latitude: 49.09619000000001,
+      },
+      {
+        name: 'Pacific Northwest Trail',
+        longitude: -119.43703000000001,
+        latitude: 48.93676000000001,
+      },
+      {
+        name: 'Continental Divide Trail Montana/Idaho',
+        label: 'Continental Divide Trail\nMontana/Idaho',
+        longitude: -112.89287000000002,
+        latitude: 47.50564000000001,
+      },
+      {
+        name: 'Continental Divide Trail Wyoming',
+        label: 'Continental Divide Trail\nWyoming',
+        longitude: -110.06837000000002,
+        latitude: 43.754960000000004,
+      },
+      {
+        name: 'Continental Divide Trail Colorado',
+        label: 'Continental Divide Trail\nColorado',
+        longitude: -106.04263,
+        latitude: 39.539280000000005,
+      },
+    ];
+    for (const landmark of trailLandmarks) {
+      const landmarkLayer = landmark.flag
+        ? farPointStartLandmark
+        : farPointLandmarks;
+      const geometry = {
+        type: 'point' as const,
+        longitude: landmark.longitude,
+        latitude: landmark.latitude,
+        spatialReference: { wkid: 4326 },
+      };
+      landmarkLayer.add(
+        new Graphic({
+          geometry,
+          symbol: landmark.flag
+            ? {
+                type: 'picture-marker',
+                url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(startFlagSvg)}`,
+                width: 28,
+                height: 32,
+                yoffset: 16,
+              }
+            : {
+                type: 'simple-marker',
+                style: 'circle',
+                size: 6,
+                color: [202, 188, 120, 1],
+                outline: { color: [2, 6, 17, 0.9], width: 1 },
+              },
+          attributes: { name: landmark.name },
+        }),
+      );
+      landmarkLayer.add(
+        new Graphic({
+          geometry,
+          symbol: {
+            type: 'text',
+            text: landmark.label ?? landmark.name,
+            color: [230, 223, 188, 1],
+            haloColor: [2, 6, 17, 0.92],
+            haloSize: 1.5,
+            font: {
+              family: 'Inter, Arial, sans-serif',
+              size: 12,
+              weight: 'bold',
+            },
+            yoffset: landmark.flag ? 38 : 14,
+          },
+          attributes: { name: `${landmark.name} label` },
+        }),
+      );
+    }
+    map.add(farPointStartLandmark);
+    map.add(farPointLandmarks);
     map.add(progressMarkerLayer);
     map.add(progressLabelLayer);
     map.add(focusedProgressLayer);
@@ -2475,12 +2655,13 @@ function GlobeView({
       onActivitySelect(activity);
     });
     const testActivityButton = document.createElement('button');
+    testActivityButtonRef.current = testActivityButton;
 
     testActivityButton.className = 'map-test-activity-button';
     testActivityButton.type = 'button';
     testActivityButton.textContent = 'Generate Test Activity';
     testActivityButton.addEventListener('click', async () => {
-      if (!supabase || !isProjectOwner(session)) {
+      if (!supabase || !ownerAccessRef.current) {
         return;
       }
 
@@ -2555,7 +2736,7 @@ function GlobeView({
       }
     });
 
-    if (isProjectOwner(session)) {
+    if (ownerAccessRef.current) {
       view.ui.add(testActivityButton, 'top-right');
     }
 
@@ -2584,9 +2765,11 @@ function GlobeView({
       clickHandle.remove();
       progressVisibilityHandle.remove();
       testActivityButton.remove();
+      testActivityButtonRef.current = null;
       view.destroy();
+      farPointTrailUrls.forEach((url) => URL.revokeObjectURL(url));
     };
-  }, [onActivitySelect, onGlobeReadyChange, onProgressActivitySelect, session]);
+  }, [onActivitySelect, onGlobeReadyChange, onProgressActivitySelect]);
 
   return (
     <div
@@ -2833,12 +3016,53 @@ function AuthPanel({ session }: AuthPanelProps) {
           className='auth-toggle'
           type='button'
           onClick={() => setIsOpen((wasOpen) => !wasOpen)}
+          aria-label={session ? `Account: ${session.user.email}` : 'Log in'}
+          aria-expanded={isOpen}
+          title={session ? `Account: ${session.user.email}` : 'Log in'}
         >
-          {session ? session.user.email : 'Log in'}
+          <svg
+            className='auth-mobile-icon'
+            viewBox='0 0 24 24'
+            fill='none'
+            stroke='currentColor'
+            strokeWidth='1.8'
+            aria-hidden='true'
+          >
+            <circle cx='12' cy='8' r='4' />
+            <path d='M4 21v-2a8 8 0 0 1 16 0v2' />
+          </svg>
+          <span className='auth-label'>
+            {session ? session.user.email : 'Log in'}
+          </span>
         </button>
         {isProjectOwner(session) && (
-          <a className='owner-action-link' href='?adminPage=addActivity'>
-            Add Activity to Project Far Point
+          <a
+            className='owner-action-link'
+            href='?adminPage=addActivity'
+            aria-label='Add Activity to Project Far Point'
+            title='Add Activity to Project Far Point'
+          >
+            <svg
+              className='auth-mobile-icon'
+              viewBox='0 0 24 24'
+              fill='none'
+              stroke='currentColor'
+              strokeWidth='2'
+              aria-hidden='true'
+            >
+              <path d='M12 4v16M4 12h16' />
+            </svg>
+            <span className='auth-label'>
+              Add Activity to Project Far Point
+            </span>
+          </a>
+        )}
+        {isProjectOwner(session) && (
+          <a
+            className='owner-action-link trail-import-header-link'
+            href='?adminPage=importTrail'
+          >
+            Import Trail GPX
           </a>
         )}
       </div>
@@ -2848,6 +3072,14 @@ function AuthPanel({ session }: AuthPanelProps) {
           {session && mode !== 'updatePassword' ? (
             <>
               <p className='auth-status'>Signed in as {session.user.email}</p>
+              {isProjectOwner(session) && (
+                <a
+                  className='owner-action-link owner-import-menu-link'
+                  href='?adminPage=importTrail'
+                >
+                  Import Trail GPX
+                </a>
+              )}
               <button
                 className='auth-submit'
                 type='button'
@@ -4643,9 +4875,7 @@ function JourneySummary({ progress }: JourneySummaryProps) {
     <aside className='journey-summary' aria-label='Project route summary'>
       <div className='summary-item summary-voyager'>
         <span className='summary-kicker journey-voyager'>Voyager</span>
-        <span className='summary-label'>
-          New Zealand to Spain
-        </span>
+        <span className='summary-label'>New Zealand to Spain</span>
         <span className='summary-progress-text'>
           <strong>{voyagerProgress.distanceLabel}</strong> of 20,038 km
           completed <strong>({voyagerProgress.percentLabel})</strong>
@@ -4661,9 +4891,7 @@ function JourneySummary({ progress }: JourneySummaryProps) {
         <span className='summary-kicker journey-far-point'>
           Far Point Trail
         </span>
-        <span className='summary-label'>
-          New Zealand to Spain
-        </span>
+        <span className='summary-label'>New Zealand to Spain</span>
         <span className='summary-progress-text'>
           <strong>{farPointProgress.distanceLabel}</strong> of 20,038 km
           completed <strong>({farPointProgress.percentLabel})</strong>
@@ -5247,6 +5475,20 @@ function App() {
   const isDraggingMapControl = useRef(false);
   const mapControlStart = useRef({ x: 0, y: 0 });
   const hasMovedMapControl = useRef(false);
+  const mapDirectionHintTimer = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const [showMapDirectionHint, setShowMapDirectionHint] = useState(false);
+  const [mapControlReleased, setMapControlReleased] = useState(false);
+
+  useEffect(
+    () => () => {
+      if (mapDirectionHintTimer.current !== null) {
+        clearTimeout(mapDirectionHintTimer.current);
+      }
+    },
+    [],
+  );
   const [selectedActivity, setSelectedActivity] =
     useState<SelectedProjectActivity | null>(null);
   const [activityPanelMode, setActivityPanelMode] =
@@ -5387,7 +5629,7 @@ function App() {
       );
       const nextHeight = Math.min(
         76,
-        Math.max(28, ((viewportHeight - clientY) / viewportHeight) * 100),
+        Math.max(10, ((viewportHeight - clientY) / viewportHeight) * 100),
       );
       const opacityProgress =
         (nextControlX - mobileMapControlMinX) /
@@ -5413,6 +5655,12 @@ function App() {
       y: event.clientY,
     };
     setShowMapHandleHint(false);
+    setShowMapDirectionHint(true);
+    setMapControlReleased(false);
+    if (mapDirectionHintTimer.current !== null) {
+      clearTimeout(mapDirectionHintTimer.current);
+      mapDirectionHintTimer.current = null;
+    }
     event.currentTarget.setPointerCapture(event.pointerId);
     updateMobileMapFromPointer(event.clientX, event.clientY);
   }
@@ -5448,6 +5696,15 @@ function App() {
     if (!hasMovedMapControl.current) {
       toggleMobileMapPreset();
     }
+
+    setMapControlReleased(true);
+    if (mapDirectionHintTimer.current !== null) {
+      clearTimeout(mapDirectionHintTimer.current);
+    }
+    mapDirectionHintTimer.current = setTimeout(() => {
+      setShowMapDirectionHint(false);
+      mapDirectionHintTimer.current = null;
+    }, 2000);
   }
 
   const handleMobileModeChange = useCallback((nextMode: MobileMode) => {
@@ -5557,6 +5814,14 @@ function App() {
 
   if (adminPage === 'addActivity') {
     return <AddActivityPage session={session} />;
+  }
+  if (adminPage === 'importTrail') {
+    return (
+      <ImportTrailPage
+        authorized={isProjectOwner(session)}
+        account={<AuthPanel session={session} />}
+      />
+    );
   }
 
   return (
@@ -5698,113 +5963,153 @@ function App() {
             <div className='welcome-copy'>
               <h2>OVERVIEW</h2>
               <p>
-                Project Far Point is a geo-blog documenting my multi-year goal
-                of walking a cumulative distance equal to the circumference of the
-                Earth: 40,076 kilometers. Over that time, thousands of
-                excursions will become the real-world steps for two imagined
-                journeys - <strong className='journey-voyager'>Voyager</strong>{' '}
-                and the
+                Project Far Point is a geo-blog documenting my multi-year
+                retirement-dream of walking, kayaking, and rafting a cumulative
+                distance equal to the circumference of the Earth: 40,076
+                kilometers (24,902 miles). Over that time, thousands of
+                excursions will become the real-world steps and strokes for two
+                imagined journeys -{' '}
+                <strong className='journey-voyager'>Voyager</strong> and the
                 <strong className='journey-far-point'>
                   {' '}
                   Far Point Trail
-                </strong>{' '}
-                .  The virtual paths for Voyager and the Far Point Trail start in the Southern Alps of New Zealand midway along the 3000
-                km Te Araroa Trail; from that point, two great semi-circles traveling in exact opposite
-                directions wrap completely around Earth to the FAR POINT of the planet in Spain. The virtual paths reunite after 20,038 km each along the famed Camino
-                de Santiago at the exact antipode of the Te Araroa Trail starting point in New Zealand.
+                </strong>. The <i>virtual</i> paths for Voyager and the Far
+                Point Trail start in the Southern Alps of New Zealand midway
+                along the 3000 km Te Araroa Trail; from that point, two great
+                semi-circles traveling in exact opposite directions wrap
+                completely around Earth to the FAR POINT of the planet in Spain.
+                The virtual paths reunite after 20,038 km each along the famed
+                Camino de Santiago at the exact antipode of the Te Araroa
+                Trail's starting point in New Zealand.
               </p>
 
               <p>
-                The real-world goal for <strong className='journey-voyager'>Voyager</strong>{' '} is to complete walks in all 50 US states, 12 Canadian provinces and territories, 24
-                countries, and 100 parks located throughout the world. With each
-                new adventure, Voyager's progress path will grow on the
-                globe, bringing it closer to its destination and creating a 
-                tapestry of stories, photos, and videos along the way.
+                <strong className='journey-voyager'>Voyager</strong> is named
+                after the NASA space probes launched in 1977. Now over 26
+                billion kilometers from Earth, Voyager 1 is the most distant
+                human-made object and the first to explore interstellar space.
+                The real-world goal for Project Far Point's Voyager is to live
+                up to its namesake - to go far and boldly explore. Voyager will
+                visit all 50 US states, 12 Canadian provinces and territories,
+                24 countries, and 100 state and national parks located
+                throughout the world. With each new adventure, Voyager's
+                progress path will grow on the globe, bringing it closer to its
+                destination and creating a tapestry of stories, photos, and
+                videos along the way.
               </p>
               <p>
-                The second part of the project, the                 <strong className='journey-far-point'>
-                  {' '}
-                  Far Point Trail
-                </strong>{' '}, is
-                Voyager's wild twin. The Far Point Trail
-                is a continuous wilderness trek linking some of North America's
-                most iconic long-distance trails, including Canada's Great
-                Divide Trail and the Trans Canada Trail, the Pacific Northwest
+                The second part of the project, the{' '}
+                <strong className='journey-far-point'> Far Point Trail</strong>,
+                is Voyager's wild twin. The Far Point Trail is a wilderness trek
+                linking some of North America's most iconic long-distance
+                trails. In Canada the route connects the Great Divide Trail and
+                the Trans Canada Trail, by following the legendary paddle
+                strokes of David Thompson down the Columbia River. In the United
+                States, the route connects sections of the Pacific Northwest
                 Trail, the Continental Divide Trail, the Arizona Trail, the
                 Pacific Crest Trail, and the Oregon and California Coast trails.
               </p>
               <p>
                 With patience and endurance, Voyager and the Far Point Trail
-                will one day combine to complete a full virtual circumnavigation
-                of the Earth. You can explore the map and activities by clicking
-                on the routes and markers and
-                follow along as the progress paths grow with each new walk.
-                You will find photos, videos, and stories from the adventures,
-                as well as reflections on the experience of connecting with the
-                world through travel and imagination.
+                will one day combine to complete a full <i>virtual </i>{' '}
+                circumnavigation of the Earth. You can explore the map and
+                activities by clicking on the routes and markers and follow
+                along as the progress paths grow with each new walk. You will
+                find photos, videos, and stories from the adventures, as well as
+                reflections on the experience of connecting with the world
+                through travel and imagination.
               </p>
               <p>
                 The destination may be years away, but the adventure begins with
-                the next step. I invite
-                you to follow along and share in the journey.
+                the next step. I invite you to follow along and share in my
+                journey.
               </p>
-              <p><strong> River Madsen - November 2026</strong></p>
+              <p>
+                <strong> River Madsen - November 2026</strong>
+              </p>
               <div>
                 <h2>RULES</h2>
                 <ol>
                   <li>
-                    Acceptable modes of travel for the purpose of distance tracking on Voyager and the Far
-                    Point Trail are limited to walking, hiking, or
-                    jogging/running only.
+                    <strong>Permitted Activities:</strong>{' '}
+                    Only outdoor walking, hiking, jogging, and running qualify
+                    for direct distance credit on Voyager and the Far Point
+                    Trail.
                   </li>
                   <li>
-                    For the Far Point Trail, travel is only permitted in one
-                    direction (from the start of the Great Divide Trail at
-                    Waterton Lake to the summit of Mt. Whitney), however the
-                    many segments of the Far Point Trail may be traveled in any
-                    order.
+                    <strong>Direction of Travel:</strong>
+                    {' '}The Far Point Trail must be traveled in the designated
+                    direction, from the Great Divide Trail's starting point at
+                    Waterton Lake to the summit of Mount Whitney. Individual
+                    trail segments may be completed in any order, provided each
+                    is traveled in the designated direction.
                   </li>
                   <li>
-                    For Voyager, out and back routes are allowed for the
-                    accumulation of distance.
+                    <strong>Out-and-Back Routes:</strong>
+                    {' '}Out-and-back routes are permitted on Voyager, with distance
+                    credited in both directions, subject to the rules governing
+                    repeated segments.
                   </li>
                   <li>
-                    For both Voyager and the Far Point Trail, distance is not
-                    counted for repeated segments of the same route.
+                    <strong>Repeated Segments:</strong>
+                    {' '}On the Far Point Trail, repeated travel over the same
+                    segment does not earn additional distance credit. On
+                    Voyager, repeated segments qualify for additional credit
+                    only when completed in a different season (winter, spring,
+                    summer, or fall).
                   </li>
                   <li>
-                    While repeated walked segments are not credited for distance, they are tallied for accumation of "extra credit". Extra credit distance
-                    can be used on both Voyager and the Far Point Trail for rare circumstances where walking is not practical (such as channel crossings, and kayak and rafting sections of both Voyager and the Far Point Trail.)
+                    <strong>Extra Credit:</strong>
+                    {' '}Distance traveled on repeated segments that does not qualify
+                    for direct credit is accumulated as <em>extra credit</em>.
+                    Treadmill kilometers also qualify as extra credit. These
+                    credits may be applied to either Voyager or the Far Point
+                    Trail to account for sections where walking is impractical,
+                    such as kayaking or river rafting routes. All credited
+                    distance must ultimately be supported by an equivalent
+                    distance walked, hiked, jogged, or run.
                   </li>
                   <li>
-                    All activities should be documented in Strava for
-                    transparency and tracking purposes. There may be times when
-                    due to circumstances such as a low phone battery it is not
-                    possible to fully record an activity, but efforts should be made
-                    to maintain accurate records whenever feasible and when not
-                    possible, a detailed explanation should be provided.
+                    <strong>Activity Recording:</strong>
+                    {' '}All activities must be recorded and documented in Strava.
+                    When circumstances prevent a complete GPS recording, such as
+                    a depleted phone battery or equipment failure, the activity
+                    must still be documented as accurately as possible,
+                    including an explanation of the missing or incomplete data.
                   </li>
                   <li>
-                    Provide at least one geo-tagged image per activity and a
-                    brief description of the activity.
+                    <strong>Photographic Documentation:</strong>
+                    {' '}Each activity must include at least one geotagged photograph
+                    and a brief description of the route or activity completed.
                   </li>
                 </ol>
                 <h4>Voyager Goals</h4>
                 <p>
                   <ol>
                     <li>
-                      Visit all 50 states and complete at least 100 km in each.
+                      Visit all 50 US states and complete at least 100 km in
+                      each.
                     </li>
                     <li>
-                      Visit all 13 provinces and terriorties in Canada and
-                      complete at least 100 km in each.
+                      Visit 12 provinces and terriorties in Canada and complete
+                      at least 100 km in each.
                     </li>
                     <li>
                       Visit 24 countries and complete at least 100 km in each.
                     </li>
+                    <li>
+                      Visit 100+ state and national parks throughout the world.
+                    </li>
+                    <li>
+                      Raft or kayak 50 km on 20 rivers (using extra-credit to
+                      back the kilometers logged).
+                    </li>
+                    <li>
+                      Kayak 10 km on 100 lakes (using extra-credit to back the
+                      kilometers logged).
+                    </li>
                   </ol>
                 </p>
-                <h4>Far Point Trail</h4>
               </div>
             </div>
           )}
@@ -5836,7 +6141,7 @@ function App() {
         </div>
         <div className='globe-panel' aria-label='Interactive 3D globe'>
           <button
-            className={`mobile-map-control${showMapHandleHint ? ' mobile-map-control-with-hint' : ''}`}
+            className={`mobile-map-control${showMapHandleHint ? ' mobile-map-control-with-hint' : ''}${showMapDirectionHint ? ' mobile-map-control-with-directions' : ''}${mapControlReleased ? ' mobile-map-control-released' : ''}`}
             type='button'
             aria-label='Drag to resize and fade the map'
             onPointerDown={handleMobileMapControlPointerDown}
@@ -5845,6 +6150,20 @@ function App() {
             onPointerCancel={handleMobileMapControlPointerUp}
           >
             <span aria-hidden='true'>Drag Me!</span>
+            {showMapDirectionHint && (
+              <svg
+                className='mobile-map-direction-icon'
+                viewBox='0 0 24 24'
+                fill='none'
+                stroke='currentColor'
+                strokeWidth='2'
+                strokeLinecap='round'
+                strokeLinejoin='round'
+                aria-hidden='true'
+              >
+                <path d='M12 2v20M2 12h20M8 6l4-4 4 4M8 18l4 4 4-4M6 8l-4 4 4 4M18 8l4 4-4 4' />
+              </svg>
+            )}
           </button>
           <GlobeView
             session={session}
@@ -5893,6 +6212,10 @@ function App() {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    {window.location.pathname.replace(/\/$/, '') === '/offline' ? <OfflinePreview /> : <App />}
+    {window.location.pathname.replace(/\/$/, '') === '/offline' ? (
+      <OfflinePreview />
+    ) : (
+      <App />
+    )}
   </StrictMode>,
 );
