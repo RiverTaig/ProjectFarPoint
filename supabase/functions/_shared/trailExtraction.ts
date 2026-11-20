@@ -164,6 +164,9 @@ export function parseOfflineUrl(value: string, registeredTrail = { code: 'TA', t
   const [trail, path, localDateTime, startText, endText] = values;
   if (trail !== registeredTrail.code) throw new TrailError('UNKNOWN_TRAIL', `Trail ${trail} is not registered for this request.`);
   if (path !== 'V' && path !== 'F') throw new TrailError('INVALID_PATH', 'Use p=V for Voyager or p=F for Far Point Trail.');
+  if (/^FPT[1-9]\d*$/.test(trail) && path !== 'F') {
+    throw new TrailError('INVALID_PATH', 'Far Point Trail segments require p=F.');
+  }
   if (!/^\d{8}T\d{4}$/.test(localDateTime)) throw new TrailError('INVALID_TIME', 'Use dt=YYYYMMDDTHHMM in the trail local timezone.');
   const [year, month, day, hour, minute] = [localDateTime.slice(0, 4), localDateTime.slice(4, 6), localDateTime.slice(6, 8), localDateTime.slice(9, 11), localDateTime.slice(11, 13)].map(Number);
   const date = new Date(Date.UTC(year, month - 1, day, hour, minute));
