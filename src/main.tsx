@@ -5499,7 +5499,7 @@ function SearchPanel({ onActivitySelect }: SearchPanelProps) {
 
 function App() {
   const session = useSupabaseSession();
-  const storyPanelRef = useRef<HTMLElement | null>(null);
+  const mobileShellRef = useRef<HTMLElement | null>(null);
   const isDraggingMapControl = useRef(false);
   const mapControlStart = useRef({ x: 0, y: 0 });
   const hasMovedMapControl = useRef(false);
@@ -5739,7 +5739,7 @@ function App() {
     setMobileMode(nextMode);
     window.requestAnimationFrame(() => {
       if (window.matchMedia('(max-width: 980px)').matches) {
-        window.scrollTo({
+        mobileShellRef.current?.scrollTo({
           top: 0,
           behavior: 'smooth',
         });
@@ -5756,9 +5756,9 @@ function App() {
       setDesktopContentTab('story');
       window.requestAnimationFrame(() => {
         if (window.matchMedia('(max-width: 980px)').matches) {
-          storyPanelRef.current?.scrollIntoView({
+          mobileShellRef.current?.scrollTo({
+            top: 0,
             behavior: 'smooth',
-            block: 'start',
           });
         }
       });
@@ -5774,9 +5774,9 @@ function App() {
       setDesktopContentTab('story');
       window.requestAnimationFrame(() => {
         if (window.matchMedia('(max-width: 980px)').matches) {
-          storyPanelRef.current?.scrollIntoView({
+          mobileShellRef.current?.scrollTo({
+            top: 0,
             behavior: 'smooth',
-            block: 'start',
           });
         }
       });
@@ -5853,7 +5853,7 @@ function App() {
   }
 
   return (
-    <main className={`welcome-page mobile-mode-${mobileMode}`} style={appStyle}>
+    <main ref={mobileShellRef} className={`welcome-page mobile-mode-${mobileMode}`} style={appStyle}>
       <div className='mobile-shell-header'>
         <div className='mobile-brand-heading'>
           <button
@@ -5911,7 +5911,6 @@ function App() {
       </nav>
       <section
         className='welcome-copy-panel'
-        ref={storyPanelRef}
         aria-labelledby='welcome-title'
       >
         <header className='brand-header'>
