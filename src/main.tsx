@@ -3,6 +3,7 @@ import {
   StrictMode,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -5543,6 +5544,29 @@ function App() {
   const [mapProgressFocusActivityKey, setMapProgressFocusActivityKey] =
     useState(0);
   const [showLogoLightbox, setShowLogoLightbox] = useState(false);
+  const resetContentScroll = useCallback(() => {
+    const shell = mobileShellRef.current;
+    if (!shell) return;
+    shell.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+    shell
+      .querySelectorAll<HTMLElement>('.intro, .desktop-search-content')
+      .forEach((panel) => {
+        panel.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+      });
+  }, []);
+
+  // Reset after the new content commits, before it is painted. Activity keys
+  // also cover selecting the same map activity again; auth updates do not reset it.
+  useLayoutEffect(() => {
+    resetContentScroll();
+  }, [
+    selectedActivity?.id,
+    selectedActivityAnimationKey,
+    activityPanelMode,
+    mobileMode,
+    desktopContentTab,
+    resetContentScroll,
+  ]);
   const [, setIsGlobeReady] = useState(false);
   const logoUrl = `${import.meta.env.BASE_URL}ProjectFarPoint.png`;
   const progressPositionsByActivityId = useMemo(() => {
@@ -5737,15 +5761,8 @@ function App() {
 
   const handleMobileModeChange = useCallback((nextMode: MobileMode) => {
     setMobileMode(nextMode);
-    window.requestAnimationFrame(() => {
-      if (window.matchMedia('(max-width: 980px)').matches) {
-        mobileShellRef.current?.scrollTo({
-          top: 0,
-          behavior: 'smooth',
-        });
-      }
-    });
-  }, []);
+    resetContentScroll();
+  }, [resetContentScroll]);
 
   const handleActivitySelect = useCallback(
     (activity: SelectedProjectActivity) => {
@@ -5754,14 +5771,6 @@ function App() {
       setSelectedActivityAnimationKey((currentKey) => currentKey + 1);
       setMobileMode('project');
       setDesktopContentTab('story');
-      window.requestAnimationFrame(() => {
-        if (window.matchMedia('(max-width: 980px)').matches) {
-          mobileShellRef.current?.scrollTo({
-            top: 0,
-            behavior: 'smooth',
-          });
-        }
-      });
     },
     [],
   );
@@ -5772,14 +5781,6 @@ function App() {
       setSelectedActivityAnimationKey((currentKey) => currentKey + 1);
       setMobileMode('project');
       setDesktopContentTab('story');
-      window.requestAnimationFrame(() => {
-        if (window.matchMedia('(max-width: 980px)').matches) {
-          mobileShellRef.current?.scrollTo({
-            top: 0,
-            behavior: 'smooth',
-          });
-        }
-      });
     },
     [],
   );
@@ -5829,8 +5830,9 @@ function App() {
   const handleDesktopContentTabChange = useCallback(
     (nextTab: DesktopContentTab) => {
       setDesktopContentTab(nextTab);
+      resetContentScroll();
     },
-    [],
+    [resetContentScroll],
   );
   const appStyle = {
     '--mobile-map-height': mobileMapHeight,
