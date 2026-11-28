@@ -591,12 +591,50 @@ body {
   scrollbar-width: none;
 }
 
+.content-navigation {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex: 0 0 auto;
+  margin-bottom: clamp(16px, 2.4vw, 28px);
+  border-bottom: 1px solid rgba(155, 228, 255, 0.12);
+}
+
+.recent-activity-button {
+  padding: 0 0 10px;
+  color: #9be4ff;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+}
+
+.recent-activity-button:hover:not(:disabled),
+.recent-activity-button:focus-visible {
+  border-bottom-color: #4fb4ff;
+}
+
+.recent-activity-mobile-button {
+  display: none;
+}
+
+.recent-activity-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .desktop-content-tabs {
   display: flex;
   flex: 0 0 auto;
   gap: 8px;
-  margin: 0 0 clamp(16px, 2.4vw, 28px);
-  border-bottom: 1px solid rgba(155, 228, 255, 0.12);
+  margin: 0;
 }
 
 .desktop-content-tabs button {
@@ -1266,13 +1304,13 @@ h1 {
 .route-story-carousel-button img {
   height: 100%;
   animation: route-story-carousel-image-in 260ms ease-out both;
-  object-fit: cover;
+  object-fit: contain;
 }
 
 @keyframes route-story-carousel-image-in {
   0% {
     opacity: 0.24;
-    transform: translateX(10px) scale(1.01);
+    transform: translateX(10px);
   }
 
   100% {
@@ -2205,6 +2243,13 @@ h1 {
     padding-right: 0;
   }
 
+  .recent-activity-mobile-button {
+    display: block;
+    align-self: flex-end;
+    margin-bottom: 12px;
+  }
+
+  .content-navigation,
   .desktop-content-tabs,
   .desktop-search-content {
     display: none;

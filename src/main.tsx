@@ -44,6 +44,7 @@ type ProjectActivity = {
   name: string;
   sport_type: string | null;
   started_at: string | null;
+  created_at?: string;
   pfp_type: 'Voyager' | 'Far Point Trail' | null;
   trail_name: string | null;
   city: string | null;
@@ -225,7 +226,7 @@ type ArcgisWorldCitiesResponse = {
 };
 
 const projectActivityBaseSelectColumns =
-  'id,name,sport_type,started_at,pfp_type,trail_name,city,state,province,country,continent,corrected_distance,distance_made_good,strava_type,strava_url,text_description,geometry_simplified_medium';
+  'id,name,sport_type,started_at,created_at,pfp_type,trail_name,city,state,province,country,continent,corrected_distance,distance_made_good,strava_type,strava_url,text_description,geometry_simplified_medium';
 const projectActivitySelectColumns = `${projectActivityBaseSelectColumns},progress_story`;
 const arcgisWorldGeocodeServiceUrl =
   'https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer';
@@ -1518,7 +1519,8 @@ function setBasemapLabelsVisible(map: Map, isVisible: boolean) {
   });
 }
 
-async function playOpeningGlobeAnimation(view: SceneView) {
+async function playOpeningGlobeAnimation(view: SceneView, isCancelled: () => boolean) {
+  if (isCancelled()) return;
   const finalCamera = new Camera({
     position: {
       longitude: -3.7,
@@ -1557,6 +1559,7 @@ async function playOpeningGlobeAnimation(view: SceneView) {
   ];
 
   for (const camera of cameraStops) {
+    if (isCancelled()) return;
     await view.goTo(camera, {
       duration: 4200,
       easing: 'ease-in-out',
@@ -1591,6 +1594,7 @@ function GlobeView({
 }: GlobeViewProps) {
   const sceneNode = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<SceneView | null>(null);
+  const openingAnimationCancelled = useRef(false);
   const testActivityButtonRef = useRef<HTMLButtonElement | null>(null);
   const ownerAccessRef = useRef(false);
   const isOwner = isProjectOwner(session);
@@ -1690,6 +1694,10 @@ function GlobeView({
       return;
     }
 
+    // Cancel both the active opening flight and any opening stages still scheduled.
+    openingAnimationCancelled.current = true;
+    viewRef.current?.animation?.stop();
+
     const targetActivityId = focusActivityId;
     let retryCount = 0;
     let retryTimeout: number | null = null;
@@ -1711,8 +1719,10 @@ function GlobeView({
       focusedProgressLayerRef.current?.removeAll();
       view
         .goTo(extent.expand(1.35), {
-          animate: true,
-          duration: 900,
+          animate: !window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+          duration: 3600,
+          maxDuration: 5000,
+          easing: 'ease-in-out',
         })
         .catch(() => {
           // The view may be interrupted by a user pan/zoom.
@@ -1732,6 +1742,9 @@ function GlobeView({
     if (!focusProgressActivityId || focusProgressActivityKey === 0) {
       return;
     }
+
+    openingAnimationCancelled.current = true;
+    viewRef.current?.animation?.stop();
 
     const targetActivityId = focusProgressActivityId;
     let retryCount = 0;
@@ -1835,6 +1848,7 @@ function GlobeView({
       return;
     }
 
+    openingAnimationCancelled.current = false;
     setIsGlobeReady(false);
     onGlobeReadyChange(false);
     let isDestroyed = false;
@@ -2492,7 +2506,7 @@ function GlobeView({
     let initialImageryFallbackTimeout: number | null = null;
     let hasStartedOpeningAnimation = false;
     const startOpeningAnimation = () => {
-      if (isDestroyed || hasStartedOpeningAnimation) {
+      if (isDestroyed || openingAnimationCancelled.current || hasStartedOpeningAnimation) {
         return;
       }
 
@@ -2501,11 +2515,11 @@ function GlobeView({
       onGlobeReadyChange(true);
 
       openingAnimationTimeout = window.setTimeout(() => {
-        if (isDestroyed) {
+        if (isDestroyed || openingAnimationCancelled.current) {
           return;
         }
 
-        playOpeningGlobeAnimation(view).catch(() => {
+        playOpeningGlobeAnimation(view, () => isDestroyed || openingAnimationCancelled.current).catch(() => {
           // The animation may be interrupted if the user navigates away or moves the globe.
         });
       }, 280);
@@ -3183,6 +3197,17 @@ function AuthPanel({ session }: AuthPanelProps) {
   );
 }
 
+function ActivityImagePreview({ file }: { file: File | null }) {
+  const [url, setUrl] = useState('');
+  useEffect(() => {
+    if (!file) { setUrl(''); return; }
+    const objectUrl = URL.createObjectURL(file);
+    setUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [file]);
+  return url ? <img src={url} alt='Selected activity photo' style={{ width: 120, height: 90, objectFit: 'cover', borderRadius: 6 }} /> : null;
+}
+
 type AddActivityPageProps = {
   session: Session | null;
 };
@@ -3205,6 +3230,9 @@ function AddActivityPage({ session }: AddActivityPageProps) {
   const [activityImages, setActivityImages] = useState<ActivityImageInput[]>(
     [],
   );
+  const [contentAttempt, setContentAttempt] = useState(0);
+  const [isLoadingContent, setIsLoadingContent] = useState(false);
+  const [contentMessage, setContentMessage] = useState('');
   const [isLoadingItems, setIsLoadingItems] = useState(false);
   const [isImportingActivity, setIsImportingActivity] = useState(false);
   const searchParams = new URLSearchParams(window.location.search);
@@ -3227,7 +3255,48 @@ function AddActivityPage({ session }: AddActivityPageProps) {
   useEffect(() => {
     setActivityMetadata(createActivityMetadata(selectedImportItem));
     setActivityImages([]);
-  }, [selectedImportItem]);
+    setContentMessage('');
+    if (importKind !== 'activity' || !selectedActivity || !supabase) {
+      setIsLoadingContent(false);
+      return;
+    }
+    const client = supabase;
+    const activityId = selectedActivity.id;
+    let cancelled = false;
+    setIsLoadingContent(true);
+    setContentMessage('Loading Strava description and photos…');
+    void (async () => {
+      try {
+        const { data, error } = await client.functions.invoke('strava-activity-content', { body: { activityId } });
+        if (error) throw new Error(await getFunctionErrorMessage(error, 'Could not load Strava content.'));
+        if (cancelled) return;
+        setActivityMetadata((current) => ({ ...current, textDescription: data.description ?? '' }));
+        const images: ActivityImageInput[] = [];
+        const failures: string[] = [];
+        for (const photo of data.photos as { index: number; name: string; caption: string }[]) {
+          if (cancelled) return;
+          try {
+            const { data: blob, error: photoError, response: photoResponse } = await client.functions.invoke('strava-activity-content', { body: { activityId, photoIndex: photo.index } });
+            if (photoError) throw new Error(await getFunctionErrorMessage(photoError, 'Photo download failed.'));
+            if (!(blob instanceof Blob)) throw new Error('Strava returned an invalid image.');
+            const imageType = photoResponse?.headers.get('X-Image-Type') ?? 'image/jpeg';
+            const extension = imageType === 'image/png' ? 'png' : imageType === 'image/webp' ? 'webp' : imageType === 'image/gif' ? 'gif' : 'jpg';
+            images.push({ id: crypto.randomUUID(), name: photo.name, caption: photo.caption, file: new File([blob], `${photo.name}.${extension}`, { type: imageType }) });
+          } catch (failure) {
+            failures.push(`${photo.name}: ${failure instanceof Error ? failure.message : 'Download failed.'}`);
+          }
+        }
+        if (cancelled) return;
+        setActivityImages(images);
+        setContentMessage([`Loaded description and ${images.length} Strava photo${images.length === 1 ? '' : 's'}.`, data.warning, ...failures].filter(Boolean).join(' '));
+      } catch (failure) {
+        if (!cancelled) setContentMessage(`Strava content could not be loaded: ${failure instanceof Error ? failure.message : 'Unexpected error.'} Retry loading, or add text and images manually.`);
+      } finally {
+        if (!cancelled) setIsLoadingContent(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedImportItem, importKind, contentAttempt]);
 
   function handleMetadataChange(
     event: ChangeEvent<
@@ -3740,6 +3809,7 @@ function AddActivityPage({ session }: AddActivityPageProps) {
                     <span>Text description</span>
                     <textarea
                       name='textDescription'
+                      disabled={isLoadingContent}
                       value={activityMetadata.textDescription}
                       onChange={handleMetadataChange}
                       rows={10}
@@ -3751,10 +3821,15 @@ function AddActivityPage({ session }: AddActivityPageProps) {
                     className='activity-secondary-button activity-lorem-button'
                     type='button'
                     onClick={handleGenerateLoremIpsum}
+                    disabled={isLoadingContent}
                   >
                     Generate Lorem Ipsum
                   </button>
 
+                  {contentMessage && <p role='status'>{contentMessage}</p>}
+                  {importKind === 'activity' && selectedActivity && !isLoadingContent && (
+                    <button type='button' className='activity-secondary-button' onClick={() => setContentAttempt((attempt) => attempt + 1)}>Reload Strava text and photos</button>
+                  )}
                   <div className='activity-image-upload-section'>
                     <div className='activity-image-upload-header'>
                       <span>Activity images</span>
@@ -3762,7 +3837,7 @@ function AddActivityPage({ session }: AddActivityPageProps) {
                         className='activity-secondary-button'
                         type='button'
                         onClick={handleAddImageInput}
-                        disabled={activityImages.length >= 10}
+                        disabled={isLoadingContent || activityImages.length >= 10}
                       >
                         Add image
                       </button>
@@ -3808,7 +3883,8 @@ function AddActivityPage({ session }: AddActivityPageProps) {
                             </label>
 
                             <label className='activity-image-file-field'>
-                              <span>File</span>
+                              <ActivityImagePreview file={image.file} />
+                              <span>File{image.file ? ` — ${image.file.name}` : ''}</span>
                               <input
                                 type='file'
                                 accept='image/jpeg,image/png,image/webp,image/gif'
@@ -3841,6 +3917,7 @@ function AddActivityPage({ session }: AddActivityPageProps) {
                   type='button'
                   onClick={handleImportActivity}
                   disabled={
+                    isLoadingContent ||
                     isImportingActivity ||
                     (importKind === 'activity' && !selectedActivityId) ||
                     (importKind === 'route' && !routeIdToImport)
@@ -5567,7 +5644,15 @@ function App() {
     desktopContentTab,
     resetContentScroll,
   ]);
-  const [, setIsGlobeReady] = useState(false);
+  const [isGlobeReady, setIsGlobeReady] = useState(false);
+  const recentActivity = useMemo(() => {
+    return allProjectActivities.reduce<ProjectActivity | null>((latest, activity) => {
+      if (createActivityPaths(activity).length === 0) return latest;
+      const uploadedAt = Date.parse(activity.created_at ?? '') || 0;
+      const latestUploadedAt = Date.parse(latest?.created_at ?? '') || 0;
+      return !latest || uploadedAt > latestUploadedAt ? activity : latest;
+    }, null);
+  }, [allProjectActivities]);
   const logoUrl = `${import.meta.env.BASE_URL}ProjectFarPoint.png`;
   const progressPositionsByActivityId = useMemo(() => {
     return new globalThis.Map(
@@ -5794,6 +5879,12 @@ function App() {
     },
     [],
   );
+  const handleRecentActivity = useCallback(() => {
+    if (!recentActivity) return;
+    handleActivitySelect(recentActivity);
+    setMapFocusActivityId(recentActivity.id);
+    setMapFocusActivityKey((currentKey) => currentKey + 1);
+  }, [recentActivity, handleActivitySelect]);
   const handleActivityFocus = useCallback((activityId: string) => {
     setActivityPanelMode('story');
     setMapFocusActivityId(activityId);
@@ -5936,34 +6027,53 @@ function App() {
           </div>
           <AuthPanel session={session} />
         </header>
-        <div
-          className='desktop-content-tabs'
-          role='tablist'
-          aria-label='Project content'
-        >
-          <button
-            className={
-              desktopContentTab === 'story' ? 'desktop-content-tab-active' : ''
-            }
-            type='button'
-            role='tab'
-            aria-selected={desktopContentTab === 'story'}
-            onClick={() => handleDesktopContentTabChange('story')}
+        <div className='content-navigation'>
+          <div
+            className='desktop-content-tabs'
+            role='tablist'
+            aria-label='Project content'
           >
-            Story
-          </button>
+            <button
+              className={
+                desktopContentTab === 'story' ? 'desktop-content-tab-active' : ''
+              }
+              type='button'
+              role='tab'
+              aria-selected={desktopContentTab === 'story'}
+              onClick={() => handleDesktopContentTabChange('story')}
+            >
+              Story
+            </button>
+            <button
+              className={
+                desktopContentTab === 'search' ? 'desktop-content-tab-active' : ''
+              }
+              type='button'
+              role='tab'
+              aria-selected={desktopContentTab === 'search'}
+              onClick={() => handleDesktopContentTabChange('search')}
+            >
+              Search
+            </button>
+          </div>
           <button
-            className={
-              desktopContentTab === 'search' ? 'desktop-content-tab-active' : ''
-            }
+            className='recent-activity-button'
             type='button'
-            role='tab'
-            aria-selected={desktopContentTab === 'search'}
-            onClick={() => handleDesktopContentTabChange('search')}
+            onClick={handleRecentActivity}
+            disabled={!recentActivity || !isGlobeReady}
+            title='Select and zoom to the most recently uploaded activity'
           >
-            Search
+            Recent Activity
           </button>
         </div>
+        <button
+          className='recent-activity-button recent-activity-mobile-button'
+          type='button'
+          onClick={handleRecentActivity}
+          disabled={!recentActivity || !isGlobeReady}
+        >
+          Recent Activity
+        </button>
         <article
           className={`intro${desktopContentTab === 'search' ? ' intro-hidden-desktop' : ''}`}
         >
