@@ -5,7 +5,7 @@ import { mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 const root = new URL('../', import.meta.url);
 await mkdir(new URL('supabase/deploy/', root), { recursive: true });
-for (const name of ['submit-offline-activity','offline-activity-content']) {
+for (const name of ['submit-offline-activity','offline-activity-content','strava-activity-content','strava-import-activity','strava-import-route']) {
 await build({
   entryPoints: [fileURLToPath(new URL(`supabase/functions/${name}/index.ts`, root))],
   outfile: fileURLToPath(new URL(`supabase/deploy/${name}.ts`, root)),

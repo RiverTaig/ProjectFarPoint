@@ -4,8 +4,7 @@ import {
   getFreshStravaConnection,
 } from '../_shared/strava.ts';
 import { reverseGeocodeStartLocation } from '../_shared/geocode.ts';
-
-type Coordinate = [number, number] | [number, number, number];
+import { simplifyCoordinates, geometryTolerances, type Coordinate } from '../_shared/simplifyCoordinates.ts';
 
 type ActivityMetadata = {
   startedAt?: string;
@@ -49,51 +48,6 @@ function cleanTimestamp(value: unknown) {
   const date = new Date(value);
 
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
-}
-
-function perpendicularDistance(point: Coordinate, start: Coordinate, end: Coordinate) {
-  const [x, y] = point;
-  const [x1, y1] = start;
-  const [x2, y2] = end;
-  const dx = x2 - x1;
-  const dy = y2 - y1;
-
-  if (dx === 0 && dy === 0) {
-    return Math.hypot(x - x1, y - y1);
-  }
-
-  return Math.abs(dy * x - dx * y + x2 * y1 - y2 * x1) / Math.hypot(dx, dy);
-}
-
-function simplifyCoordinates(coordinates: Coordinate[], tolerance: number): Coordinate[] {
-  if (coordinates.length <= 2) {
-    return coordinates;
-  }
-
-  let maxDistance = 0;
-  let index = 0;
-
-  for (let i = 1; i < coordinates.length - 1; i += 1) {
-    const distance = perpendicularDistance(
-      coordinates[i],
-      coordinates[0],
-      coordinates[coordinates.length - 1],
-    );
-
-    if (distance > maxDistance) {
-      index = i;
-      maxDistance = distance;
-    }
-  }
-
-  if (maxDistance <= tolerance) {
-    return [coordinates[0], coordinates[coordinates.length - 1]];
-  }
-
-  const left = simplifyCoordinates(coordinates.slice(0, index + 1), tolerance);
-  const right = simplifyCoordinates(coordinates.slice(index), tolerance);
-
-  return [...left.slice(0, -1), ...right];
 }
 
 function findStream(streams: unknown, type: string) {
@@ -274,15 +228,15 @@ Deno.serve(async (request) => {
           geometry_geojson: geometry,
           geometry_simplified_low: {
             type: 'LineString',
-            coordinates: simplifyCoordinates(coordinates, 0.02),
+            coordinates: simplifyCoordinates(coordinates, geometryTolerances.low),
           },
           geometry_simplified_medium: {
             type: 'LineString',
-            coordinates: simplifyCoordinates(coordinates, 0.005),
+            coordinates: simplifyCoordinates(coordinates, geometryTolerances.medium),
           },
           geometry_simplified_high: {
             type: 'LineString',
-            coordinates: simplifyCoordinates(coordinates, 0.001),
+            coordinates: simplifyCoordinates(coordinates, geometryTolerances.high),
           },
           raw_activity: route,
           updated_at: new Date().toISOString(),
